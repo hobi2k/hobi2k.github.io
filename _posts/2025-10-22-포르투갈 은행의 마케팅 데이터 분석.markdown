@@ -69,6 +69,7 @@ Moro, S., Cortez, P., & Rita, P. (2014). A Data-Driven Approach to Predict the S
 ## 데이터 전처리
 
 ### 제거 변수
+
 | 변수명 | 이유 |
 |--------|------|
 | `duration` | 예측 시점에 알 수 없음 |
