@@ -1,7 +1,8 @@
 ---
 
 layout: category
-
-title: Review
+title: "Review"
+category: "Review"
+permalink: /category/Review/
 
 ---

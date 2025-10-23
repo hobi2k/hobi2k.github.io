@@ -1,7 +1,7 @@
 ---
 
 layout: category
-
-title: ML
-
+title: "ML"
+category: "ML"
+permalink: /category/ML/
 ---

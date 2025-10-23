@@ -1,0 +1,30 @@
+---
+layout: default
+---
+
+{% assign category_key = page.category | default: page.title %}
+{% assign posts = site.categories[category_key] %}
+{% if posts == nil %}
+  {% assign posts = site.categories[category_key | downcase] %}
+{% endif %}
+{% if posts == nil %}
+  {% assign posts = site.categories[category_key | upcase] %}
+{% endif %}
+
+{%- comment -%} "Category:" 텍스트를 제거하고 카테고리 이름만 출력합니다. {%- endcomment -%}
+<h1 class="category-title">{{ page.title | default: category_key }}</h1>
+
+<div class="category-list">
+{% if posts and posts.size > 0 %}
+<ul>
+  {% for post in posts %}
+    <li>
+      <a href="{{ post.url | relative_url }}">{{ post.title }}</a>
+      <span style="color: gray;">— {{ post.date | date: "%Y-%m-%d" }}</span>
+    </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>해당 카테고리에 포스트가 없습니다.</p>
+{% endif %}
+</div>

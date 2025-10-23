@@ -1,0 +1,29 @@
+/* ...existing code... */
+
+/* 강제 적용: 다양한 컨테이너 선택자에 대해 우선순위 높게 설정 */
+main .category-title,
+.site-main .category-title,
+.content .category-title,
+.post-container .category-title,
+.page .category-title,
+.category-title {
+  margin-top: 2.5rem !important;
+  margin-bottom: 0.75rem !important;
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+/* 안전장치: 만약 상위 요소가 padding을 가지고 있다면 아래 여백도 추가 */
+main .category-list,
+.content .category-list,
+.post-container .category-list {
+  margin-top: 0.75rem !important;
+}
+
+/* 카테고리 목록과 제목 사이 간격 추가(선택) */
+.category-list {
+  margin-top: 0.5rem; /* 더 아래로 내리고 싶으면 값 증가 */
+}
+
+/* (선택) 만약 아직도 보이는 제목이 있으면 숨기려면 아래 주석 해제 */
+/* .category-list h1 { display: none !important; } */

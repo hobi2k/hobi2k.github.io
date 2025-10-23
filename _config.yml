@@ -12,6 +12,15 @@ show_excerpts: true # set to true to show excerpts on the homepage
 sass:
   sass_dir: _sass
 plainwhite:
+  navigation:
+    - title: Home
+      url: /
+    - title: ML
+      url: /category/ML/
+    - title: Review
+      url: /category/Review/
+    - title: About
+      url: /about/
   name: Ahn Hosung
   tagline: Developer. Translator
   date_format: "%b %-d, %Y"
@@ -24,10 +33,12 @@ plainwhite:
     #- home
     - page
     - post
+    - ML
+    - Review
   # generate social links in footer
   social_links:
     #twitter: samarsault
-    github:  samarsault
+    github:  hobi2k
     #linkedIn: in/samarsault
     #dribbble: jekyll
     #flickr:   jekyll
