@@ -17,8 +17,8 @@ plainwhite:
       url: /
     - title: ML
       url: /category/ML/
-    - title: Review
-      url: /category/Review/
+    - title: LLM自作入門
+      url: /category/LLM自作入門/
     - title: About
       url: /about/
   name: Ahn Hosung
