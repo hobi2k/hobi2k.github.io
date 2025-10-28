@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "つくりながら学ぶ！LLM自作入門 Day1"
+title:  "つくりながら学ぶ！LLM自作入門 - 基礎"
 date:   2025-10-21 10:43:22 +0900
 categories: LLM自作入門
 ---
@@ -41,3 +41,8 @@ GPTのようなデコーダスタイルのモデルは、単語を1つずつ予�
 
 
 最後に、モデルが明示的な訓練を受けていないタスクを実行する能力のことを、創発的行動と呼びます。
+
+
+
+参考文献
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
