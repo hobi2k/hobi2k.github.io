@@ -44,5 +44,5 @@ GPTのようなデコーダスタイルのモデルは、単語を1つずつ予�
 
 
 
-参考文献
+**参考文献**  
 Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
