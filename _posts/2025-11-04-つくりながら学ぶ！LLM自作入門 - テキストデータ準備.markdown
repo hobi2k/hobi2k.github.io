@@ -1,0 +1,186 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― テキストデータ準備（第2部）"
+date:   2025-11-04 10:43:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**テキストデータ準備編、その第2部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+## 特別なコンテキストトークンの追加
+
+未知の単語に対処するためにトークナイザを修正する必要があります。また、特別なコンテキストトークンの使い方と、そうしたトークンを追加することについても検討する必要があります。コンテキストトークンを追加すると、テキストのコンテキストやその他の関連情報に対するモデルの理解を向上させることができます。こうした特別なトークンは、たとえば未知の単語や文書の境界を示すマーカーを含めることができます。
+
+語彙の一部ではない単語に遭遇した場合、<|unk|>トークンを使うようにトークナイザを修正できます。さらに、無関係なテキストの間にトークンを追加します。たとえば、GPT型のLLMを複数の独立した文書や書籍で訓練するときには、前のテキストソースに続く各文書や書籍の前にトークンを挿入するのが一般的です。このようにすると、「これらのテキストソースは訓練のために連結されているが、実際には無関係である」ことをLLMが理解しやすくなります。
+
+```python
+class SimpleTokenizerV2:
+    def __init__(self, vocab):
+        self.str_to_int = vocab
+        self.int_to_str = { i:s for s,i in vocab.items()}
+    
+    def encode(self, text):
+        preprocessed = re.split(r'([,.:;?_!"()\']|--|\s)', text)
+        preprocessed = [item.strip() for item in preprocessed if item.strip()]
+        preprocessed = [
+            item if item in self.str_to_int 
+            else "<|unk|>" for item in preprocessed
+        ]
+
+        ids = [self.str_to_int[s] for s in preprocessed]
+        return ids
+        
+    def decode(self, ids):
+        text = " ".join([self.int_to_str[i] for i in ids])
+        # Replace spaces before the specified punctuations
+        text = re.sub(r'\s+([,.:;?!"()\'])', r'\1', text)
+        return text
+```
+
+LLMによっては、さらに次のような特別なトークンの追加を検討することもあります。  
+
+- BOS (beginning of sequence)  
+- EOS (end of sequence)  
+- PAD (padding)  
+※ すべてのテキストを同じ長さにするために、短いテキストは[PAD]トークンを使ってパディングされます。その際、テキストはそのバッチにおいて最も長いテキストと同じ長さになるまでパディングされます。
+
+GPTモデルに使われているトークナイザでは、こうしたトークンはどれも必要ではありません。単純に<|endoftext|>を使うだけです。GPTモデルは、**バイトペアエンコーディング**（byte pair encoding: BPE）のトークナイザを使い、単語をそれより小さな単位（サブワード）に分割します。
+
+## バイトペアエンコーディング
+
+BPEトークナイザは、GPT-2、GPT-3、そしてChatGPTで使われているオリジナルモデルのようなLLMの訓練に使われているトークナイザです。BPEの実装はかなり複雑になるため、**tiktoken**というPythonの既存のオープンソースライブラリを使うことができます。
+
+```python
+pip install tiktoken
+
+import importlib
+import tiktoken
+
+print("tiktoken version:", importlib.metadata.version("tiktoken"))
+
+tokenizer = tiktoken.get_encoding("gpt2")
+
+text = (
+    "Hello, do you like tea? <|endoftext|> In the sunlit terraces"
+     "of someunknownPlace."
+)
+
+integers = tokenizer.encode(text, allowed_special={"<|endoftext|>"})
+
+print(integers)
+
+strings = tokenizer.decode(integers)
+
+print(strings)
+```
+
+注意すべき点が2つあります。1つは、<|endoftext|>トークンに50256という比較的に大きなトークンIDが割り当てられていることです。実際には、GPT-2、GPT-3、そしてChatGPTのオリジナルモデルなどの訓練に使われたBPEトークナイザの語彙の合計サイズは50,257であり、<|endoftext|>に割り当てられているのは最後のトークンIDです。
+
+もう1つは、BPEトークナイザがsomeunknownPlaceのような未知の単語のエンコーディングとデコーディングを正しく行うことです。BPEのベースとなっているアルゴリズムは、事前に定義された語彙に含まれていない単語を、より小さいサブワード単位か、場合によってはばらばらの文字に分解します。このBPEアルゴリズムのおかげで、トークン化の途中に未知の単語に遭遇した場合、トークナイザはその単語をサブワードトークンか文字のシーケンスとして表現することができます。BPEは頻出する文字をサブワードにマージし、頻出するサブワードを単語にマージするという方法で語彙を構築します。
+
+## スライディングウィンドウによるデータサンプリング
+
+LLM用の埋め込みを作成する次のステップは、LLMの訓練に必要な入力変数と目的変数のペアを生成することです。テキストサンプルからLLMの入力変数となるサブサンプルとして入力ブロックを抽出します。訓練中のLLMの予測タスクは、入力ブロックに続く次の単語を予測することです。訓練中は、目的変数の後ろにある単語はすべてマスクされます。
+
+次単語予測タスクのための入力変数と目的変数のペアを作成する最も簡単で直感的な方法の1つは、xとyという2つの変数を作成することです。xには入力トークンが含まれ、yには（xを1つ後ろにシフトさせた）ターゲットトークンが含まれます。
+
+```python
+context_size = 4 # context_sizeは入力に含まれるトークンの数を決定します。
+
+x = enc_sample[:context_size]
+y = enc_sample[1:context_size+1]
+
+print(f"x: {x}")
+print(f"y:      {y}")
+```
+
+入力変数と（xを1つ後ろにシフトさせた）目的変数を一緒に処理することで、次単語予測タスクを次のように作成できます。
+
+```python
+for i in range(1, context_size+1):
+    context = enc_sample[:i]
+    desired = enc_sample[i]
+
+    print(context, "---->", desired)
+```
+
+トークンを埋め込みに変換する前に必要な残りの作業は、効率的なデータローダーを実装することです。このデータローダーは、入力データセットを繰り返し処理しながら、入力変数と目的変数をPyTorchのテンソルとして返します。入力テンソルにはLLMが見るテキスト（入力変数）が含まれており、ターゲットテンソルにはLLMが予測する目的変数が含まれています。
+
+```python
+from torch.utils.data import Dataset, DataLoader
+
+# カスタムデータセットを生成
+class GPTDatasetV1(Dataset):
+    def __init__(self, txt, tokenizer, max_length, stride):
+        self.input_ids = []
+        self.target_ids = []
+
+        # テキスト全体をトークン化
+        token_ids = tokenizer.encode(txt, allowed_special={"<|endoftext|>"})
+        assert len(token_ids) > max_length, "Number of tokenized inputs must at least be equal to max_length+1"
+
+        # スライディングウィンドウを使ってmax_length長さのシーケンスに分離
+        for i in range(0, len(token_ids) - max_length, stride):
+            input_chunk = token_ids[i:i + max_length]
+            target_chunk = token_ids[i + 1: i + max_length + 1]
+            self.input_ids.append(torch.tensor(input_chunk))
+            self.target_ids.append(torch.tensor(target_chunk))
+
+    def __len__(self):
+        return len(self.input_ids)
+
+    def __getitem__(self, idx):
+        return self.input_ids[idx], self.target_ids[idx]
+```
+
+このクラスは、PyTorchのDatasetクラスをベースとし、データセットから個々の行をどのように取り出すかを定義します。データセットの各行は、（max_lengthの長さの）トークンIDで構成され、input_chunkテンソルに代入されます。target_chunkテンソルには、対応する目的変数が代入されます。次はデータローダーです。
+
+```python
+def create_dataloader_v1(txt, batch_size=4, max_length=256, 
+                         stride=128, shuffle=True, drop_last=True,
+                         num_workers=0):
+
+    # トークナイザのインスタンス化
+    tokenizer = tiktoken.get_encoding("gpt2")
+
+    # データセット生成
+    dataset = GPTDatasetV1(txt, tokenizer, max_length, stride)
+
+    # データローダー読み込み
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=drop_last,
+        num_workers=num_workers
+    )
+
+    return dataloader
+```
+
+このようにクラスの作成が終わると、次のように使用することができます。
+
+```python
+with open("the-verdict.txt", "r", encoding="utf-8") as f:
+    raw_text = f.read()
+
+dataloader = create_dataloader_v1(
+    raw_text, batch_size=1, max_length=4, stride=1, shuffle=False
+)
+
+data_iter = iter(dataloader)
+first_batch = next(data_iter)
+print(first_batch)
+```
+
+各バッチには、2つのテンソルが含まれています。1つ目のテンソルは入力トークンIDを格納し、2つ目のテンソルは出力IDを格納します。上記ではmax_lengthが4に設定されましたが、LLMを訓練するときには、入力サイズとして少なくとも256を使うのが一般的です。stride設定は、バッチ間での入力のシフトを位置の数で表します。
+
+バッチサイズが小さいと訓練時に必要なメモリが少なくならものの、モデルの更新時にノイズが増える（勾配の計算やパラメータの更新が不安定になる）可能性があります。標準ディープラーニングと同じように、バッチサイズはトレードオフであり、LLMを訓練するときに実験すべきハイパーパラメータです。また、入力データセットから複数のバッチを作成するときには、テキストを横切るように入力ウィンドウをスライドさせます。というのも、オーバーラップが多いと（モデルが同じデータを何度も見てしまい）過剰適合のリスクが高まるからです。
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
