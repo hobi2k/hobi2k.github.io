@@ -38,7 +38,7 @@ plainwhite:
   # generate social links in footer
   social_links:
     #twitter: samarsault
-    github:  hobi2k
+    github: hobi2k
     #linkedIn: in/samarsault
     #dribbble: jekyll
     #flickr:   jekyll
