@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "つくりながら学ぶ！LLM自作入門 ― Attentionメカニズム（第3部）"
-date:   2025-11-12 10:43:22 +0900
+date:   2025-11-12 00:10:22 +0900
 categories: LLM自作入門
 ---
 

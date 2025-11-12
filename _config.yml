@@ -17,8 +17,12 @@ plainwhite:
       url: /
     - title: ML
       url: /category/ML/
+    - title: DeepLearning
+      url: /category/DeepLearning/
     - title: LLM自作入門
       url: /category/LLM自作入門/
+    - title: LClassifier
+      url: /category/LClassifier/
     - title: About
       url: /about/
   name: Ahn Hosung
@@ -34,7 +38,10 @@ plainwhite:
     - page
     - post
     - ML
-    - Review
+    - DeepLearning
+    - LLM自作入門
+    - LClassifier
+    - about
   # generate social links in footer
   social_links:
     #twitter: samarsault
