@@ -1,0 +1,216 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― LLMアーキテクチャ実装（第1部）"
+date:   2025-11-13 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**LLMアーキテクチャ実装編、その第1部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+## LLMアーキテクチャのコーディング
+
+GPT（Generative Pretrained Transformer）をはじめとするLLMは、新しいテキストを1語（1トークン）ずつ生成することを目的として設計された、大規模なディープニューラルネットワークです。ディープラーニングやGPT型のLLMでは、「パラメータ」はモデルの訓練可能な重みを指します。これらの重みは基本的にモデルの内部変数であり、特定の損失関数を最小化するために訓練プロセスで調整され、最適化されます。この最適化により、モデルが訓練データから学習することが可能になります。
+
+たとえば、2,048 x 2,048次元の重み行列（テンソル）で表されるニューラルネットワーク層では、この行列の各要素はパラメータです。2,048個の行と2,048個の列があるため、この層のパラメータの総数は2,048 x 2,048 = 4,194,304個です。
+
+それでは、小さなGPT-2モデルの設定を先に指定しておきます。
+
+```python
+GPT_CONFIG_124M = {
+    "vocab_size": 50257,    # 語彙サイズ
+    "context_length": 1024, # コンテキストの長さ
+    "emb_dim": 768,         # 埋め込み次元
+    "n_heads": 12,          # Attentionヘッドの数
+    "n_layers": 12,         # 層の数
+    "drop_rate": 0.1,       # ドロップアウト率
+    "qkv_bias": False       # クエリ、キー、値の計算にバイアスを使うかどうか
+}
+```
+
+GPT_CONFIG_124Mディクショナリ（辞書）で各キーは次を指します。
+
+- vocab_sizeは、BPEトークナイザが使う50,257語の語彙を表します。
+- context_lengthは、位置埋め込みを通じてモデルが扱うことができる入力トークンの最大数を表します。
+- emb-dimは、埋め込みサイズを表します（各トークンを768次元のベクトルに変換します）。
+- n_headsは、Multi-head AttentionメカニズムのAttentionヘッドの数を表します。
+- n_layersは、モデルのTransformerブロックの数を指定します。
+- drop_rateは、過剰適合を防ぐためのドロップアウトメカニズムの強度を指定します。0.1は隠れ層ユニットの10%がランダムにドロップアウトされることを意味します。
+- qkv_biasは、Multi-head Attentionでクエリ、キー、値の計算に使うLinear層にバイアスベクトルを追加するかどうかを決定します。最初は、現代のLLMの標準に従ってバイアスベクトルを無効にしますが、後に再検討します。
+
+この設定を使って、GPTバックボーンを実装します。このプレースホルダアーキテクチャにより、すべてがどのように組み合わされるのか、GPTモデルアーキテクチャを完成させるために他にどのようなコンポーネントをコーディングする必要があるのかを全体的に把握できます。
+
+```python
+import torch
+import torch.nn as nn
+
+
+class DummyGPTModel(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"])
+        self.pos_emb = nn.Embedding(cfg["context_length"], cfg["emb_dim"])
+        self.drop_emb = nn.Dropout(cfg["drop_rate"])
+        
+        # TransformerBlockにはプレースホルダを使います。
+        self.trf_blocks = nn.Sequential(
+            *[DummyTransformerBlock(cfg) for _ in range(cfg["n_layers"])])
+        
+        # LayerNormにもプレースホルダを使います。
+        self.final_norm = DummyLayerNorm(cfg["emb_dim"])
+        self.out_head = nn.Linear(
+            cfg["emb_dim"], cfg["vocab_size"], bias=False
+        )
+
+    def forward(self, in_idx):
+        batch_size, seq_len = in_idx.shape
+        tok_embeds = self.tok_emb(in_idx)
+        pos_embeds = self.pos_emb(torch.arange(seq_len, device=in_idx.device))
+        x = tok_embeds + pos_embeds
+        x = self.drop_emb(x)
+        x = self.trf_blocks(x)
+        x = self.final_norm(x)
+        logits = self.out_head(x)
+        return logits
+
+
+class DummyTransformerBlock(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        # 後に本物のTransformerBlockに置き換える単純だプレースホルダクラス
+
+    def forward(self, x):
+        return x
+
+
+class DummyLayerNorm(nn.Module):
+    def __init__(self, normalized_shape, eps=1e-5):
+        super().__init__()
+        # 後に本物のLayerNormに置き換える単純なプレースホルダクラス
+
+    def forward(self, x):
+        return x
+```
+
+DummyGPTModelクラスのモデルアーキテクチャは、トークン埋め込みと位置埋め込み、ドロップアウト、一連のTransformerブロック（DummyTransformerBlock）、最後に適用される層正規化（DummyLayerNorm）、線形出力層（out_head）で構成されています。GPTモデルの設定は、たとえば先ほど作成したGPT_CONFIG_124Mのような、Pythonディクショナリで渡されます。
+
+forward()メソッドは、このモデルでのデータの流れ（フォワードパス）を表しています。このメソッドは、入力インデックスに対応するトークン埋め込みと位置埋め込みを計算し、ドロップアウトを適用し、Transformerブロックでデータを処理し、正規化を適用し、最後に線形出力層でロジットを生成します。LLMでは、入力トークンの埋め込み次元は一般に出力の埋め込み次元と一致しています。この場合、出力される埋め込みベクトルはコンテキストベクトルを表します。
+
+```python
+
+import tiktoken
+
+tokenizer = tiktoken.get_encoding("gpt2")
+
+batch = []
+
+txt1 = "Every effort moves you"
+txt2 = "Every day holds a"
+
+batch.append(torch.tensor(tokenizer.encode(txt1)))
+batch.append(torch.tensor(tokenizer.encode(txt2)))
+batch = torch.stack(batch, dim=0)
+print(batch)
+```
+
+上記のようにトークン化したバッチbatchを入力として渡します。
+
+```python
+torch.manual_seed(123)
+model = DummyGPTModel(GPT_CONFIG_124M)
+
+logits = model(batch)
+print("Output shape:", logits.shape)
+print(logits)
+```
+
+出力でのトークンはそれぞれ、トークナイザの語彙のサイズと一致する50,257次元のベクトルです。この埋め込みが50,257次元なのは、これらの次元がそれぞれ語彙の一意なトークンを指しているためです。後処理コードを実装するときに、この50,257次元のベクトルをトークンIDに変換して、単語にデコードできるようにします。
+
+## 層正規化を使って活性化を正規化
+
+多くの層からなるディープニューラルネットワークの訓練は、勾配消失や勾配爆発などの問題のせいで、場合によっては難題です。こうした問題によって学習のダイナミクスが不安定になり、ニューラルネットワークの重みを効果的にに調整するのが難しくなります。つまり、訓練プロセスが損失関数を最小化するパラメータ（重み）を見つけ出すのに苦労することになります。言い換えれば、ニューラルネットワークがデータに内在する基本的なパターンを学習することが難しくなり、その結果、正確な予測や意思決定を行うことができなくなります。
+
+では、ニューラルネットワークの学習の安定性と効率性を向上させるために、層正規化（layer normalization）を実装してみましょう。層正規化の主な考え方は、ニューラルネットワーク層の出力（活性化）を平均0、分散1（単位分散）になるように調整するというものです。この調整により、効果的な重みへの収束が始まり、訓練の一貫性と信頼性が確保されます。GPT-2や現代のTransformerアーキテクチャでは、層正規化はMulti-head Attentionモジュールの前または後に適用するのが一般的であり、またDummyLayerNormプレースホルダのコードで示したように、最後の出力層の前に適用します。
+
+```python
+torch.manual_seed(123)
+
+# それぞれ5つの次元（特徴量）を持つ2つの訓練サンプルを作成
+batch_example = torch.randn(2, 5) 
+
+layer = nn.Sequential(nn.Linear(5, 6), nn.ReLU())
+out = layer(batch_example)
+print(out)
+```
+
+ここで実装したニューラルネットワーク層は、Linear層とそれに続く線形活性化関数ReLU()で構成されています。ReLU（Rectified Linear Unit）は、ニューラルネットワークの標準的な活性化関数であり、単に負の入力を0にして、層の出力が正の値だけになるようにします。層の出力に負の値が含まれていないのはそのためです。
+
+```python
+mean = out.mean(dim=-1, keepdim=True)
+var = out.var(dim=-1, keepdim=True)
+
+print("Mean:\n", mean)
+print("Variance:\n", var)
+```
+
+平均や分散のような計算でkeepdim=Trueを使うと、dimで指定された次元に沿ってテンソルを縮小したとしても、出力テンソルの次元数は入力テンソルと同じままになります。
+
+dimパラメータは、テンソルで統計量（この場合は平均や分散）を計算するときの次元を指定します。（行列のような）2次元のテンソルの場合、平均や分散の計算にdim=-1を使うことは、dim=1を使うことと同じです。これは-1がテンソルの最後の次元を指していて、2次元テンソルの列に相当するためです。
+
+層正規化では、出力から平均を引き、分散の平方根（標準偏差）で割ります。これを標準化と呼びます。
+
+```python
+out_norm = (out - mean) / torch.sqrt(var)
+print("Normalized layer outputs:\n", out_norm)
+
+mean = out_norm.mean(dim=-1, keepdim=True)
+var = out_norm.var(dim=-1, keepdim=True)
+print("Mean:\n", mean)
+print("Variance:\n", var)
+```
+
+結果を出力してみれば分かるように、正規化された出力には負の値も含まれており、平均が0、分散が1になっています。
+
+なお、出力テンソルの値-5.9605e-08は、-5.9605 x 10<sup>-8</sup>の科学表記であり、10進数では-0.000000059605です。これは0に非常に近い値ですが、コンピュータが数値を表現する精度は有限であり、そのために蓄積される可能性がある小さな数値誤差のせいで、正確には0ではありません。読みやすさを向上させたい場合は、sci_mode=Falseを指定すると、テンソルの値を出力するときに科学表記をオフにできます。
+
+それでは、層正規化クラスを実装してみましょう。
+
+```python
+class LayerNorm(nn.Module):
+    def __init__(self, emb_dim):
+        super().__init__()
+        self.eps = 1e-5
+        self.scale = nn.Parameter(torch.ones(emb_dim))
+        self.shift = nn.Parameter(torch.zeros(emb_dim))
+
+    def forward(self, x):
+        mean = x.mean(dim=-1, keepdim=True)
+        var = x.var(dim=-1, keepdim=True, unbiased=False)
+        norm_x = (x - mean) / torch.sqrt(var + self.eps)
+        return self.scale * norm_x + self.shift
+```
+
+この層正規化の実装は、入力テンソルxの最後の次元である埋め込み次元（emb_dim）に適用されます。変数epsは、正規化時にゼロ除算を防ぐために分散に加算される小さな変数（X）です。scale変数とshift変数は、（入力と同じ次元の）2つの訓練可能なパラメータであり、訓練時のモデルの性能を向上させるためにLLMによって自動的に調整されます。これにより、処理しているデータに最適なスケーリングとシフトをモデルが学習できるようになります。
+
+先の分散の計算方法では、unbiased=Falseを設定することで、実装依存の詳細を利用しています。これは何を意味するかというと、分散の計算において入力の数nで除算を行うことになります。ヘッセル補正では、標本分散推定でのバイアスを調整するために分母にnではなくn-1を使うのが一般的ですが、このアプローチでは、この補正を適用しません。この決定により、いわゆる有偏な分散推定を行うことになります。LLMでは、埋め込み次元nが非常に大きいため、nとn-1の差は実質的には無視できます。このアプローチを選択したのは、GPT-2モデルの正規化層との交換性を維持するためです。
+
+```python
+ln = LayerNorm(emb_dim=5)
+out_ln = ln(batch_example)
+mean = out_ln.mean(dim=-1, keepdim=True)
+var = out_ln.var(dim=-1, unbiased=False, keepdim=True)
+
+print("Mean:\n", mean)
+print("Variance:\n", var)
+```
+
+上記のコードを実行すると、層正規化コードが期待どおりに動作し、2つの入力のそれぞれの値を平均0、分散1になるように正規化することが分かります。
+
+バッチ正規化はバッチ次元に沿って正規化を行いますが、層正規化は特徴量に沿って正規化を行います。LLMには膨大な計算リソースが必要になることが多く、利用可能なハードウェアや具体的なユースケースによって訓練や推定時のバッチサイズが決まることがあります。層正規化はバッチサイズとは無関係に各入力を正規化するため、そうしたシナリオで柔軟性と安定性が向上します。このため、分散訓練を行う場合や、リソースに制約がある環境でモデルをデプロイする場合に、特に効果が期待できます。
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
