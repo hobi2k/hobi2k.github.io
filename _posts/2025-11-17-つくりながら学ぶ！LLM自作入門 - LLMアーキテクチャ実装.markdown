@@ -1,0 +1,184 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― LLMアーキテクチャ実装（第2部）"
+date:   2025-11-17 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**LLMアーキテクチャ実装編、その第2部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+## GELU活性化を使ってフィードフォワードネットワーク実装
+
+次は、LLMにおいてTransformerブロックの一部として使われる小さなニューラルネットワークサブモジュールを実装します。ReLU活性化関数については、そのシンプルさや、さまざまなニューラルネットワークアーキテクチャでの有効性から、ディープラーニングで一般的に使われてきたという経緯があります。一方で、LLMでは、従来のReLUの他にもいくつかの活性化関数が採用されています。GELU（Gaussian Error Linear Unit）とSwiGLU（Swish-Gated Linear Unit）は、その代表的な例です。
+
+GELUとSwiGLUは、より複雑で滑らかな活性化関数であり、それぞれガウス線形ユニットとシグモイドゲート線形ユニットを組み込んでいます。GELU活性化関数は、いくつかの方法で実装できます。厳密には、GELU(x)=x⋅Φ(x)と定義されている、ここでΦ(x)は標準ガウス分布の累積分布関数を表します。ただし、実際には、より計算量の少ない近似を実装するのが一般的です。
+
+```python
+class GELU(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return 0.5 * x * (1 + torch.tanh(
+            torch.sqrt(torch.tensor(2.0 / torch.pi)) * 
+            (x + 0.044715 * torch.pow(x, 3))
+        ))
+```
+
+このGELU関数をReLU関数と比較することには、次のコードを利用できます。
+
+```python
+import matplotlib.pyplot as plt
+
+gelu, relu = GELU(), nn.ReLU()
+
+x = torch.linspace(-3, 3, 100)
+y_gelu, y_relu = gelu(x), relu(x)
+
+plt.figure(figsize=(8, 3))
+for i, (y, label) in enumerate(zip([y_gelu, y_relu], ["GELU", "ReLU"]), 1):
+    plt.subplot(1, 2, i)
+    plt.plot(x, y)
+    plt.title(f"{label} activation function")
+    plt.xlabel("x")
+    plt.ylabel(f"{label}(x)")
+    plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+```
+
+ReLUは区分線形関数であり、入力が正であればそのまま出力し、そうでなければゼロを出力します。GELUはReLUを近似する滑らかな非線形関数ですが、ほぼすべての負の値で勾配がゼロではありません。GELUは滑らかであるため、モデルパラメータの微調整が可能であり、訓練時の最適化がよりスムーズに進む可能性があります。対照的に、ReLUはゼロで鋭く切り替わるため、最適化が難しくなることがあります。非常に深いネットワークやより複雑なアーキテクチャを持つネットワークでは、特にそうなりがちです。さらに、負の入力に対してゼロを出力するReLUとは異なり、GELUでは、負の値に対して非ゼロの小さな出力が許容されます。この特性は、訓練プロセスで負の入力を受け取るニューロンが。正の入力ほどではないものの、依然として学習プロセスに貢献できることを意味します。
+
+それでは、GELU関数を使ってFeedForwardを実装してみましょう。
+
+```python
+class FeedForward(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(cfg["emb_dim"], 4 * cfg["emb_dim"]),
+            GELU(),
+            nn.Linear(4 * cfg["emb_dim"], cfg["emb_dim"]),
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+```
+
+FeedForwardモジュールは、2つのLinear層とGELU活性化関数からなる小さなニューラルネットワークです。1億2,400万パラメータのGPTモデルでは、GPT_CONFIG_124Mディクショナリ（GPT_CONFIG_124M["emb_dim"] = 768）に基づいて、各トークンが768次元の埋め込みベクトルとして表現された入力バッチが渡されます。
+
+FeedForwardモジュールは、データから学習して汎化するモデルの能力を向上させるうえで重要な役割を果たします。このモジュールの入力と出力の次元は同じですが、内部では1つ目の線形層を通じて埋め込み次元が高次元空間に拡張されます。この拡張に続いて、GELU活性化関数によって非線形変換が適用され、2つ目の線形層で元の次元に縮小されます。このように設計すると、より表現力のある空間の探索が可能になります。
+
+さらに、入力と出力の次元が均一であるため、アーキテクチャも単純になります。後ほど実際に見ていくように、複数の層を積み重ねることが可能になり、層の間で次元を調整する必要がないため、モデルのスケーラビリティが向上します。
+
+## ショートカット接続の追加
+
+では、ショートカット接続（shortcut connection）の概念について見てみましょう。ショートカット接続は、スキップ接続や残差接続とも呼ばれる概念で、もともとはコンピュータビジョンのディープネットワーク（特に残差ネットワーク）で勾配消失問題を軽減するために考案されました。勾配は、訓練中に重みを更新するための指標のようなものです。勾配消失問題は、勾配がネットワークの後ろの層に伝播する過程で徐々に小さくなり、入力に近い最初のほうにある層をうまく訓練できなくなる問題です。ショートカット接続は層の入力をその出力に追加することで、特定の層を迂回する代替パスを作り出します。たとえば、ショートカット接続はLayer1の入力値を出力値に追加します。
+
+ショートカット接続は、1つ以上の層をスキップし、ある層の出力を後の層の出力に追加することで、勾配がネットワークを流れるためのより短いパスを作り出します。このため、こうした接続はスキップ接続とも呼ばれます。ショートカット接続は、訓練時のバックワードパスで勾配の流れを維持する上で重要な役割を果たします。
+
+```python
+class ExampleDeepNeuralNetwork(nn.Module):
+    def __init__(self, layer_sizes, use_shortcut):
+        super().__init__()
+        self.use_shortcut = use_shortcut
+        self.layers = nn.ModuleList([
+            nn.Sequential(nn.Linear(layer_sizes[0], layer_sizes[1]), GELU()),
+            nn.Sequential(nn.Linear(layer_sizes[1], layer_sizes[2]), GELU()),
+            nn.Sequential(nn.Linear(layer_sizes[2], layer_sizes[3]), GELU()),
+            nn.Sequential(nn.Linear(layer_sizes[3], layer_sizes[4]), GELU()),
+            nn.Sequential(nn.Linear(layer_sizes[4], layer_sizes[5]), GELU())
+        ])
+
+    def forward(self, x):
+        for layer in self.layers:
+            # 現在の層の出力を計算
+            layer_output = layer(x)
+            # ショートカットを適用できるかどうかをチェック
+            if self.use_shortcut and x.shape == layer_output.shape:
+                x = x + layer_output
+            else:
+                x = layer_output
+        return x
+
+
+def print_gradients(model, x):
+    # フォワードパス
+    output = model(x)
+    target = torch.tensor([[0.]])
+
+    # outputとtargetがどれくらい近いかに基づいて損失関数を計算
+    loss = nn.MSELoss()
+    loss = loss(output, target)
+    
+    # 勾配を計算するバックワードパス
+    loss.backward()
+
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            print(f"{name} has gradient mean of {param.grad.abs().mean().item()}")
+```
+
+まとめると、ディープニューラルネットワークにおいて勾配消失問題がおｔらす制約を克服する上で、ショートカット接続は重要です。ショートカット接続は、LLMなどの非常に大規模なモデルの中核的な構成要素です。
+
+## TransformerブロックでAttention層と線形層を接続する
+
+では、Transformerブロックの実装に取り掛かります。Transformerブロックは、GPTアーキテクチャや他のLLMアーキテクチャの基本的な構成要素であり、Multi-head Attention、層正規化、ドロップアウト、フィードフォワード層、GELU活性化など、ここまで取り上げてきた概念を結合します。1億2,400万パラメータのGPT-2アーキテクチャでは、このブロックが12回繰り返されます。
+
+Multi-head Attentionブロックでは、Self-Attentionメカニズムが入力シーケンスの要素間の関係を識別し、分析します。対照的に、フィードフォワードネットワークでは、それぞれの位置でデータが個別に変更されます。この組み合わせにより、入力の微妙な違いを理解して処理できるようになるだけではなく、複雑なデータパターンを処理するモデルの全体的な能力が強化されます。
+
+```python
+from previous_chapters import MultiHeadAttention
+
+
+class TransformerBlock(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.att = MultiHeadAttention(
+            d_in=cfg["emb_dim"],
+            d_out=cfg["emb_dim"],
+            context_length=cfg["context_length"],
+            num_heads=cfg["n_heads"], 
+            dropout=cfg["drop_rate"],
+            qkv_bias=cfg["qkv_bias"])
+        self.ff = FeedForward(cfg)
+        self.norm1 = LayerNorm(cfg["emb_dim"])
+        self.norm2 = LayerNorm(cfg["emb_dim"])
+        self.drop_shortcut = nn.Dropout(cfg["drop_rate"])
+
+    def forward(self, x):
+        # Attentionブロックのショートカット接続
+        shortcut = x
+        x = self.norm1(x)
+        x = self.att(x)  # サイズは[batch_size, num_tokens, emb_size]
+        x = self.drop_shortcut(x)
+        x = x + shortcut  # 元の入力を追加
+
+        # フィードフォワードブロックのショートカット接続
+        shortcut = x
+        x = self.norm2(x)
+        x = self.ff(x)
+        x = self.drop_shortcut(x)
+        x = x + shortcut  # 元の入力を追加
+
+        return x
+```
+
+上記はTransformerBlockクラスをPyTorchで定義したものであり、Multi-head Attentionメカニズム（MultiHeadAttention）とフィードフォワードネットワーク（FeedForward）を含んでいます。どちらのコンポーネントも、たとえばGPT_CONFIG_124Mなど、指定されたディクショナリ（cfg）に基づいて設定されます。
+
+層正規化（LayerNorm）は、これら2つのコンポーネントの前に適用されます（Pre-LayerNorm）。ドロップアウトは、モデルを正規化して過剰適合を防ぐために、これらのコンポーネントの後に適用されます。オリジナルのTransformerモデルのような古いアーキテクチャでは、層正規化はSelf-Attentionとフィードフォワードネットワークの後に適用されます（Post-LayerNorm）。Post-LayerNormはしばしば学習のダイナミクスに悪影響をおよぼします。
+
+このクラスはフィードフォワードパスも実装しており、各コンポーネントの後に、ブロックの入力をその出力に追加するショートカット接続があります。この重要な機能は、訓練中の勾配の流れを安定させ、ディープモデルの学習能力を向上させます。
+
+Transformerブロックの出力を見ると、入力の次元が維持されていることがわかります。つまり、Transformerアーキテクチャはネットワーク全体を通じてデータシーケンスの形状を変えることなくデータを処理するということです。
+
+Transformerアーキテクチャ全体での形状の維持は、付随的なものではなく、このアーキテクチャの重要な設計要素です。この設計により、Transformerブロックを幅広いSequence-to-Sequenceタスクに適用できます。出力ベクトルはそれぞれ入力ベクトルに直絶対応し、1対1の関係が維持されます。ただし、出力は入力シーケンス全体の情報をカプセル化したコンテキストベクトルです。つまり、シーケンスの物理的な大きさ（長さと特徴量のサイズ）はTransformerブロックを通過しても変化しませんが、各出力ベクトルの内容は入力シーケンス全体のコンテキスト情報を統合するようにエンコードし直されます。このTransformerブロックがGPTアーキテクチャのメインコンポーネントを構成することになります。
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
