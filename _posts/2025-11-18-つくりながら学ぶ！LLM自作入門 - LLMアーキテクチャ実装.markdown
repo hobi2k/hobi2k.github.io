@@ -1,0 +1,181 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― LLMアーキテクチャ実装（第3部）"
+date:   2025-11-18 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**LLMアーキテクチャ実装編、その第3部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+## GPTモデルの実装
+
+GPT-2モデルをコードで組み立てる前に、全体的な構造を見ておきます。GPTモデルアーキテクチャ全体で、Transformerブロックが何回も繰り返されることがわかります。最後のTransformerブロックからの出力は、線形出力層に到達する前に、最後の層正規化ステップを通過します。この層は、シーケンスの次に来るトークンを予測するために、Transformerブロックの出力を高次元空間（この場合は、モデルの語彙のサイズに相当する50,257次元）に射影します。
+
+整理してみましょう。トークン化されたテキストがトークン埋め込みに変換され、続いて位置埋め込みで補強されます。この情報の組み合わせが、中央の一連のTransformerブロックを通過するテンソルを形成します。Transformerブロックはそれぞれドロップアウトと層正規化が含まれたMulti-head Attentionとフィードフォワードニューラルネットワークで構成され、相互に積み重なった状態で12回繰り返されます。
+
+```python
+class GPTModel(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"])
+        self.pos_emb = nn.Embedding(cfg["context_length"], cfg["emb_dim"])
+        self.drop_emb = nn.Dropout(cfg["drop_rate"])
+        
+        self.trf_blocks = nn.Sequential(
+            *[TransformerBlock(cfg) for _ in range(cfg["n_layers"])])
+        
+        self.final_norm = LayerNorm(cfg["emb_dim"])
+        self.out_head = nn.Linear(
+            cfg["emb_dim"], cfg["vocab_size"], bias=False
+        )
+
+    def forward(self, in_idx):
+        batch_size, seq_len = in_idx.shape
+        tok_embeds = self.tok_emb(in_idx)
+        pos_embeds = self.pos_emb(torch.arange(seq_len, device=in_idx.device))
+        x = tok_embeds + pos_embeds  # サイズ [batch_size, num_tokens, emb_size]
+        x = self.drop_emb(x)
+        x = self.trf_blocks(x)
+        x = self.final_norm(x)
+        logits = self.out_head(x)
+        return logits
+```
+
+TransformerBlockクラスのおかげで、GPTModelクラスは比較的小さくコンパクトです。このGPTModelクラスの__init__()コンストラクタメソッドは、Pythonディクショナリcfgで渡された設定に基づいて、トークン埋め込み層と位置埋め込み層を初期化します。これらの埋め込み層は、入力トークンインデックスを密ベクトルに変換し、位置情報を追加する役割を果たします。
+
+次に、__init__()メソッドは、cfgのn_layersに等しい数のTransformerBlockモジュールが連続的に積み重ねられたスタックを作成します。これらのTransformerブロックの続いてLayerNorm層が適用され、学習プロセスを安定させるためにTransformerブロックの出力を標準化します。最後に、バイアスのない線形出力ヘッドを定義し、Transformerブロックの出力をトークナイザの語彙空間に射影することで、語彙内のトークンごとにロジットを生成します。
+
+forward()メソッドは、入力トークンインデックスのバッチを受け取り、それらの埋め込みを計算し、位置埋め込みを適用し、Transformerブロックを通過させ、最終的な出力を正規化し、ロジットを計算します。これらのロジットは、次に来るトークンの正規化されていない確率を表します。
+
+モデルのパラメータテンソルのパラメータの総数は、numel()メソッド（"number of elements"の略）を使って取得できます。
+
+```python
+total_params = sum(p.numel() for p in model.parameters())
+print(f"Total number of parameters: {total_params:,}")
+
+
+Total number of parameters: 163,009,536
+```
+
+コードの出力から矛盾を感じるかもしれません。1億2,400万パラメータのGPTモデルを初期化するという話だったのに、なぜ実際のパラメータの数が1億6,300万なのでしょう。
+
+その理由は、オリジナルのGPTアーキテクチャで使われていた重み共有（weight tying）という概念にあります。つまり、オリジナルのGPT-2アーキテクチャは、トークン埋め込み層の重みを出力層で再利用しているのです。この点をよく理解するために、GPTModelモデル（model）で初期化したトークン埋め込み層と線形出力層の形状を調べてみましょう。
+
+```python
+print("Token embedding layer shape:", model.tok_emb.weight.shape)
+print("Output layer shape:", model.out_head.weight.shape)
+
+Token embedding layer shape: torch.Size([50257, 768])
+Output layer shape: torch.Size([50257, 768])
+```
+
+GPT-2モデル全体のパラメータ数から線形出力層のパラメータ数を差し引いて、重み共有を考慮した場合のパラメータ数を求めてみましょう。
+
+```python
+total_params_gpt2 =  total_params - sum(p.numel() for p in model.out_head.parameters())
+print(f"Number of trainable parameters considering weight tying: {total_params_gpt2:,}")
+
+
+Number of trainable parameters considering weight tying: 124,412,160
+```
+
+モデルのパラメータ数は約1億2,400万個であり、オリジナルのGPT-2モデルのサイズと一致することが分かります。
+
+重み共有は、モデルの全体的なメモリフットプリントと計算量を減らします。ただし、トークン埋め込み層と出力層を個々に使うほうが、モデルの訓練と性能がよくなります。
+
+## テキスト生成
+
+今度は、GPTモデルのテンソル出力を変換してテキストに戻すコードを実装します。作業を始める前に、LLMのような生成モデルがテキストを1語（1トークン）ずつ生成する仕組みを簡単に復習しておきましょう。
+
+イテレーションのたびに、生成されたトークンが入力コンテキストに追加され、モデルがコンテキスト対応の筋のとおったテキストを生成できるようになります。たとえば、入力コンテキスト"Hello, I am"を出発点として、イテレーションのたびにモデルが後続のトークンを予測し、次のイテレーションの予測のためにそのトークンを入力コンテキストに追加します。このプロセスは入力テキストをトークンIDにエンコードし、GPTモデルに入力として与えることから始まります。続いて、モデルの出力がテキストに変換され、元の入力テキストに追加されます。
+
+
+GPTモデルが出力テンソルを最終的な生成テキストに変化させるプロセスは、いくつかのステップに分かれています。これらのステップには、出力テンソルのデコーディング、確率分布に基づくトークンの選択、トークンからヒューマンリーダブルなテキストへの変換が含まれています。GPTモデルはステップごとに、次のトークン候補を表すベクトルが含まれた行列を出力します。次のトークンに対応するベクトルが抽出され、ソフトマックス関数によって確率分布に変換されます。結果の確率分布が含まれたベクトルにおいて最も大きい値のインテックスが特定され、トークンIDとして解釈されます。このトークンIDがデコードされてテキストに戻され、シーケンスの次のトークンとなります。最後に、このトークンが前の入力に追加され、次のイテレーションのための新しい入力シーケンスが形成されます。この段階的なプロセスにより、GPTモデルは最初の入力コンテキストに基づいてテキストを逐次的に生成しながら、筋のとおった文章を組み立てることができます。
+
+```python
+def generate_text_simple(model, idx, max_new_tokens, context_size):
+    # idxは現在のコンテキストに対応するインデックスの(batch, n_tokens)配列
+    for _ in range(max_new_tokens):
+        
+        # サポートされているコンテキストサイズを超える場合は現在のコンテキストを切り詰める。
+        # たとえば、LLMがトークンを5つだけサポートしていて、コンテキストが10の場合は、最後の5つのトークンだけがコンテキストとして使われる
+        idx_cond = idx[:, -context_size:]
+        
+        # Get the predictions
+        with torch.no_grad():
+            logits = model(idx_cond)
+        
+        # 最後のタイムステップにのみ着目し、
+        # (batch, n_tokens, vocab_size)が(batch, vocab_size)になるようにする
+        logits = logits[:, -1, :]  
+
+        # ソフトマックス関数適用
+        probas = torch.softmax(logits, dim=-1)  # (batch, vocab_size)
+
+        # 一番確率の高い値のインデックスを抽出
+        idx_next = torch.argmax(probas, dim=-1, keepdim=True)  # (batch, 1)
+
+        # サンプリングしたインテックスを実行中のシーケンスに追加
+        idx = torch.cat((idx, idx_next), dim=1)  # (batch, n_tokens+1)
+
+    return idx
+```
+
+この関数は、言語モデルの生成ループのシンプルなPyTorch実装を示しています。このコードは、指定さえた数の新しいトークンを生成し、モデルの最大コンテキストサイズに合わせて現在のコンテキストを切り詰め、トークンの確率分布を予測し、最も確率が高いトークンを次のトークンとして選択するというプロセスを繰り返します。
+
+generate_text_simple()関数の実装では、softmax()（ソフトマックス）関数を使ってロジットを確率分布に変換し、argmax()関数を使って最も大きい値の位置を特定します。ソフトマックス関数は、入力を出力に変換するときに入力の順序を維持するため、その意味では単調関数であると言えます。このため実際には、ソフトマックス関数は冗長です。なぜなら、ソフトマックス関数の出力テンソルで最も高いスコアがある位置は、ロジットテンソルでも同じだからです。言い換えると、argmax()関数をロジットテンソルに直接適用しても、同じ結果が得られます。ここでは、ロジットが確率に変換されるプロセス全体を実際に確認しながら、モデルが次に来る可能性が最も高いトークンを生成する方法について理解を深めるために、変換のコードを見てもらうことにしました。この方法は貪欲なデコーディング（greedy decoding）と呼ばれます。
+
+後にGPTモデルを訓練するコードを実装するときには、ソフトマックス関数の出力を調整する追加のサンプリングテクニックを使って、モデルが次に来る可能性が最も高いトークンを選ぶとは限らないようにします。このようにすると、生成されるテキストにばらつきや創造性が生まれます。
+
+それでは、実際にコードを試してみましょう。
+
+```python
+
+start_context = "Hello, I am"
+
+encoded = tokenizer.encode(start_context)
+print("encoded:", encoded)
+
+encoded_tensor = torch.tensor(encoded).unsqueeze(0)
+print("encoded_tensor.shape:", encoded_tensor.shape)
+
+# encoded: [15496, 11, 314, 716]
+# encoded_tensor.shape: torch.Size([1, 4])
+
+model.eval() # ドロップアウトを無効化
+
+out = generate_text_simple(
+    model=model,
+    idx=encoded_tensor, 
+    max_new_tokens=6, 
+    context_size=GPT_CONFIG_124M["context_length"]
+)
+
+print("Output:", out)
+print("Output length:", len(out[0]))
+
+# Output: tensor([[15496,    11,   314,   716, 27018, 24086, 47843, 30961, 42348,  7267]])
+# Output length: 10
+
+decoded_text = tokenizer.decode(out.squeeze(0).tolist())
+print(decoded_text)
+
+# Hello, I am Featureiman Byeswickattribute argue
+```
+
+## まとめ
+- 層正規化は、各層の出力の平均と分散を一貫したものにすることで、学習を安定させます。
+- ショートカット接続とは、ある層の出力をそれよりも深いところにある（後の）層に直接渡すことで。1つ以上の層を層をスキップする接続のことであり、LLMのようなディープニューラルネットワークを訓練するときの勾配消失問題を軽減するのに役立ちます。
+- TransformerブロックはGPTモデルの中核的な構成要素であり、Masked Multi-head Attentionモジュールに、GELU活性化関数を用いる全結合フィードフォワードネットワークを組み合わせたものです。
+- GPTモデルは、数百万から数十億のパラメータを持つTransformerブロックを何回も繰り返すLLMです。
+- GPTモデルのサイズは、1億2,400万ぱらめーたから3億4,500万、7億6,200万、15億4,200万パラメータまでさまざまであり、同じPyThonクラスGPTModelを使って実装できます。
+- GPT型のLLMのテキスト生成能力は、入力コンテキストに基づいてトークンを1つずつ順番に予測することで、出力テンソルをヒューマンリーダブルなテキストにデコードするというものです。
+- 訓練していないGPTモデルはでたらめなテキストを生成します。このことは、筋のとおったテキストを生成する上でモデルの訓練が重要であることを浮き彫りにしています。
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
