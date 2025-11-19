@@ -40,7 +40,7 @@ plainwhite:
     - ML
     - DeepLearning
     - LLM自作入門
-    - LClassifier
+    - LoRA Style Map
     - about
   # generate social links in footer
   social_links:
