@@ -21,8 +21,8 @@ plainwhite:
       url: /category/DeepLearning/
     - title: LLM自作入門
       url: /category/LLM自作入門/
-    - title: LClassifier
-      url: /category/LClassifier/
+    - title: LoRAMap
+      url: /category/LoRAMap/
     - title: About
       url: /about/
   name: Ahn Hosung
@@ -40,7 +40,7 @@ plainwhite:
     - ML
     - DeepLearning
     - LLM自作入門
-    - LoRA Style Map
+    - LoRAMap
     - about
   # generate social links in footer
   social_links:
