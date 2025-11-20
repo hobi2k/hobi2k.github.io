@@ -2,7 +2,7 @@
 layout: post
 title:  "CLIP 임베딩 기반 스타일 분석 프로젝트 1주차"
 date:   2025-11-14 00:10:22 +0900
-categories: LoRA Style Map
+categories: LoRAMap
 ---
 
 # 들어가며
