@@ -23,6 +23,8 @@ plainwhite:
       url: /category/LLM自作入門/
     - title: LoRAMap
       url: /category/LoRAMap/
+    - title: Huggingface_Audio
+      url: /category/Huggingface_Audio/
     - title: About
       url: /about/
   name: Ahn Hosung
