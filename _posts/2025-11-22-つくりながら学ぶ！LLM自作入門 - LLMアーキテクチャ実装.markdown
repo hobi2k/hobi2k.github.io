@@ -1,0 +1,307 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― 事前学習（第2部）"
+date:   2025-11-22 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**事前学習編、その第2部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+### 訓練データセットと検証データセットで損失計算
+
+まず、LLMの訓練に使う訓練データセットと検証データセットを準備しなければなりません。次に、モデルの訓練プロセスにおいて重要な要素である、訓練データセットと検証データセットの交差エントロピーを計算します。
+
+訓練データセットと検証データセットでの損失を計算するために、ここではEdith Whartonの短編小説『The Verdict』を使います。Project Gutenbergには、パブリックドメインの書籍が6万冊以上あります。場合によっては、それらの書籍からなる大規模なデータセットを準備し、LLMの訓練に使うこともできます。
+
+Llama 2は、一般に公開されていて、比較的広く使われているLLMであり、パラメータの数は70億です。このモデルで2兆個のトークンを処理するのに、高価なA100 GPUで184,320 GPU時間もかかりました。
+
+『The Verdict』を読み込むコードは次のようになります。
+
+```python
+import os
+import requests
+
+file_path = "the-verdict.txt"
+url = "https://raw.githubusercontent.com/rasbt/LLMs-from-scratch/main/ch02/01_main-chapter-code/the-verdict.txt"
+
+if not os.path.exists(file_path):
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    text_data = response.text
+    with open(file_path, "w", encoding="utf-8") as file:
+        file.write(text_data)
+else:
+    with open(file_path, "r", encoding="utf-8") as file:
+        text_data = file.read()
+       
+# import os
+# import urllib.request
+
+# file_path = "the-verdict.txt"
+# url = "https://raw.githubusercontent.com/rasbt/LLMs-from-scratch/main/ch02/01_main-chapter-code/the-verdict.txt"
+
+# if not os.path.exists(file_path):
+#     with urllib.request.urlopen(url) as response:
+#         text_data = response.read().decode('utf-8')
+#     with open(file_path, "w", encoding="utf-8") as file:
+#         file.write(text_data)
+# else:
+#     with open(file_path, "r", encoding="utf-8") as file:
+#         text_data = file.read()
+```
+
+データセットを読み込んだ後は、データセット内の文字数とトークン数をチェックできます。
+
+```python
+total_characters = len(text_data)
+total_tokens = len(tokenizer.encode(text_data))
+
+print("Characters:", total_characters)
+print("Tokens:", total_tokens)
+
+# Characters: 20479
+# Tokens: 5145
+```
+
+次に、データセットを訓練データセットと検証データセットに分割し、データローダーを使ってLLMを訓練するためのバッチを準備します。データローダーの準備では、入力テキストを訓練データセットと検証データセットに分割します。続いて、テキストをトークン化し、トークン化されたテキストをユーザーが指定した長さ（例えば6）のチャンクに分割します。最後に、行をシャッフルし、チャンク化されたテキストをバッチにまとめ、モデルの訓練に利用できるようにします。
+
+ここでは単純さと効率を考慮して、同じようなサイズのチャンクに分割された訓練データでモデルを訓練しています。ただし実際には、LLMを可変長の入力で訓練するのも効果的です。そのようにすると、LLMを使うときに、さまざまな種類の入力にLLMをうまく汎化させるのに役立ちます。
+
+データのシャッフルと読み込みを実装するために、まずtrain_ratioを定義し、データの90%を訓練に使い、残りの10%を訓練中のモデル評価に使います。また、「テキストデータ準備」セッションのcreate_dataloader_v1()関数のコードを再利用して、訓練データセットと検証データセットのデータローダーを作成します。
+
+```python
+train_ratio = 0.90
+split_idx = int(train_ratio * len(text_data))
+train_data = text_data[:split_idx]
+val_data = text_data[split_idx:]
+
+
+torch.manual_seed(123)
+
+train_loader = create_dataloader_v1(
+    train_data,
+    batch_size=2,
+    max_length=GPT_CONFIG_124M["context_length"],
+    stride=GPT_CONFIG_124M["context_length"],
+    drop_last=True,
+    shuffle=True,
+    num_workers=0
+)
+
+val_loader = create_dataloader_v1(
+    val_data,
+    batch_size=2,
+    max_length=GPT_CONFIG_124M["context_length"],
+    stride=GPT_CONFIG_124M["context_length"],
+    drop_last=False,
+    shuffle=False,
+    num_workers=0
+)
+```
+
+ここでは比較的小さなバッチサイズを使いました。実際には、LLMを1,024以上のバッチサイズで訓練することも珍しくありません。
+
+必要であれば、データローダーが正しく作成されたことを確認するために、データローダーを繰り返し実行してみることもできます。
+
+```python
+if total_tokens * (train_ratio) < GPT_CONFIG_124M["context_length"]:
+    print("Not enough tokens for the training loader. "
+          "Try to lower the `GPT_CONFIG_124M['context_length']` or "
+          "increase the `training_ratio`")
+
+if total_tokens * (1-train_ratio) < GPT_CONFIG_124M["context_length"]:
+    print("Not enough tokens for the validation loader. "
+          "Try to lower the `GPT_CONFIG_124M['context_length']` or "
+          "decrease the `training_ratio`")
+
+print("Train loader:")
+for x, y in train_loader:
+    print(x.shape, y.shape)
+
+print("\nValidation loader:")
+for x, y in val_loader:
+    print(x.shape, y.shape)
+```
+
+目的変数（y）は入力変数（x）の位置を1つずらしたものなので、予想どおり、入力データとターゲットデータの形状は同じです（バッチサイズxバッチ1つあたりのトークン数）。
+
+次に、train_loaderとval_loaderから返されたバッチについて交差エントロピー誤差を計算するユーティリティ関数を実装します。1うｔのバッチの損失を計算するユーティリティ関数calc_loss_batch()を使って、calc_loss_loader()関数を実装できます。この関数は、指定されたデータローダーによってサンプリングされたすべてのバッチに対する損失を計算します。
+
+```python
+def calc_loss_batch(input_batch, target_batch, model, device):
+    input_batch, target_batch = input_batch.to(device), target_batch.to(device)
+    logits = model(input_batch)
+    loss = torch.nn.functional.cross_entropy(logits.flatten(0, 1), target_batch.flatten())
+    return loss
+
+
+def calc_loss_loader(data_loader, model, device, num_batches=None):
+    total_loss = 0.
+    if len(data_loader) == 0:
+        return float("nan")
+    elif num_batches is None:
+        num_batches = len(data_loader)
+    else:
+        # num_batchesがデータローダーのバッチ数を超えている場合は、データローダーのバッチ数と一致するように調整
+        num_batches = min(num_batches, len(data_loader))
+    for i, (input_batch, target_batch) in enumerate(data_loader):
+        if i < num_batches:
+            loss = calc_loss_batch(input_batch, target_batch, model, device)
+            total_loss += loss.item()
+        else:
+            break
+    return total_loss / num_batches
+```
+
+デフォルトでは、calc_loss_loader()は指定されたデータローダーから返されるすべてのバッチを繰り返し処理しながら、total_loss変数で損失を計算し、バッチの総数に対する損失の平均を求めます。なお、モデルの訓練時の評価を高速化したい場合は、num_batchesを使ってバッチ数を小さくすることもできます。では、このコードを適用してみましょう。
+
+```python
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model.to(device) 
+
+torch.manual_seed(123)
+
+with torch.no_grad(): # まだ訓練していないため、効率化のために勾配の追跡を無効にする
+    train_loss = calc_loss_loader(train_loader, model, device)
+    val_loss = calc_loss_loader(val_loader, model, device)
+
+print("Training loss:", train_loss)
+print("Validation loss:", val_loss)
+
+# Training loss: 10.987583054436577
+#Validation loss: 10.98110580444336
+```
+
+損失値が比較的大きいのは、モデルがまだ訓練されていないためです。たとえば、訓練データセットと検証データセットに現れる次のトークンを生成するようにモデルを訓練した場合、損失値は0に近づきます。この損失値が小さくなるほど、LLMのテキスト生成能力は向上します。
+
+## LLMの訓練
+
+PyTorchでディープニューラルネットワークを訓練するための一般的な訓練ループはいくつものステップで構成され、数エポックにわたって訓練データセットのバッチを反復処理します。各訓練ループでは、損失の勾配を決定するために訓練データセットの各バッチの損失を計算します。この損失の勾配を使って、訓練データセットの損失が最小になるようにモデルの重みを更新します。
+
+では、train_model_simple()関数を実装してみます。
+
+```python
+def train_model_simple(model, train_loader, val_loader, optimizer, device, num_epochs,
+                       eval_freq, eval_iter, start_context, tokenizer):
+    # 損失と既視のトークンを追跡するためにリストを初期化
+    train_losses, val_losses, track_tokens_seen = [], [], []
+    tokens_seen, global_step = 0, -1
+
+    # メインの訓練ループを開始
+    for epoch in range(num_epochs):
+        model.train()
+        
+        for input_batch, target_batch in train_loader:
+            optimizer.zero_grad() # 前回のバッチの反復処理で計算された損失の勾配をリセット
+            loss = calc_loss_batch(input_batch, target_batch, model, device)
+            loss.backward() # 損失の勾配を計算
+            optimizer.step() # 勾配を使ってモデルの重みを更新
+            tokens_seen += input_batch.numel()
+            global_step += 1
+
+            # オプションの評価ステップ
+            if global_step % eval_freq == 0:
+                train_loss, val_loss = evaluate_model(
+                    model, train_loader, val_loader, device, eval_iter)
+                train_losses.append(train_loss)
+                val_losses.append(val_loss)
+                track_tokens_seen.append(tokens_seen)
+                print(f"Ep {epoch+1} (Step {global_step:06d}): "
+                      f"Train loss {train_loss:.3f}, Val loss {val_loss:.3f}")
+
+        # 各エポックの後にサンプルテキストを出力
+        generate_and_print_sample(
+            model, tokenizer, device, start_context
+        )
+
+    return train_losses, val_losses, track_tokens_seen
+```
+
+このtrain_model_simple()関数では、まだ定義していないevaluate_model()とgenerate_and_print_sample()の2つの関数を使っています。
+
+evaluate_model()関数は、モデルを更新するたびに訓練データセットと検証データセットでの損失を出力することで、訓練によってモデルが改善されたかどうかを評価できるようにします。もう少し具体的に言うと、モデルを評価モードに切り替えて勾配の追跡とドロップアウトを無効にした上で、訓練データセットと検証データセットでの損失を計算します。
+
+```python
+def evaluate_model(model, train_loader, val_loader, device, eval_iter):
+    model.eval()
+    with torch.no_grad():
+        train_loss = calc_loss_loader(train_loader, model, device, num_batches=eval_iter)
+        val_loss = calc_loss_loader(val_loader, model, device, num_batches=eval_iter)
+    model.train()
+    return train_loss, val_loss
+```
+
+evaluate_model()関数と同様に、generate_and_print_sample()関数は、訓練中にモデルが改善されたかどうかを追跡するための便利な関数です。具体的には、この関数は入力として受け取った開始コンテキスト（start_context）をトークンIDに変換し、テキストサンプルを生成するためにLLMに渡します。
+
+```python
+def generate_and_print_sample(model, tokenizer, device, start_context):
+    model.eval()
+    context_size = model.pos_emb.weight.shape[0]
+    encoded = text_to_token_ids(start_context, tokenizer).to(device)
+    with torch.no_grad():
+        token_ids = generate_text_simple(
+            model=model, idx=encoded,
+            max_new_tokens=50, context_size=context_size
+        )
+    decoded_text = token_ids_to_text(token_ids, tokenizer)
+    print(decoded_text.replace("\n", " "))  # コンパクトな出力フォーマット
+    model.train()
+```
+
+ディープニューラルネットワークの訓練には、Adam（Adaptive moment estimation）オプティマイザがよく使われます。しかし、この訓練ループでは、AdamWオプティマイザを使うことにしました。AdamWはAdamの改良版であり、大きな重みにペナルティを課すことでモデルの複雑さを最小限に抑え、過剰適合を防ぐことを目的として、重み減衰の処理方法が改善されています。この調整によってより効果的な正則化が可能となり、モデルの汎化性能が向上することから、AdamWはLLMの訓練に非常によく使われています。
+
+では、訓練ループを実行してみましょう。
+
+```python
+torch.manual_seed(123)
+model = GPTModel(GPT_CONFIG_124M)
+model.to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.0004, weight_decay=0.1)
+
+num_epochs = 10
+train_losses, val_losses, tokens_seen = train_model_simple(
+    model, train_loader, val_loader, optimizer, device,
+    num_epochs=num_epochs, eval_freq=5, eval_iter=5,
+    start_context="Every effort moves you", tokenizer=tokenizer
+)
+```
+
+検証データセットの損失について詳しく見ていく前に、訓練データセットと検証データセットの損失を並べて表示する簡単なプロットを作成してみましょう。
+
+```python
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
+
+
+def plot_losses(epochs_seen, tokens_seen, train_losses, val_losses):
+    fig, ax1 = plt.subplots(figsize=(5, 3))
+
+    ax1.plot(epochs_seen, train_losses, label="Training loss")
+    ax1.plot(epochs_seen, val_losses, linestyle="-.", label="Validation loss")
+    ax1.set_xlabel("Epochs")
+    ax1.set_ylabel("Loss")
+    ax1.legend(loc="upper right")
+    ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    ax2 = ax1.twiny()  # 同じy軸を共有する2つ目のx軸を作成
+    ax2.plot(tokens_seen, train_losses, alpha=0)  # 目盛を揃えるための不可視のプロット
+    ax2.set_xlabel("Tokens seen")
+
+    fig.tight_layout() 
+    plt.savefig("loss-plot.pdf")
+    plt.show()
+
+epochs_tensor = torch.linspace(0, num_epochs, len(train_losses))
+plot_losses(epochs_tensor, tokens_seen, train_losses, val_losses)
+```
+
+訓練を開始した時点では、訓練データセットと検証データセットの損失はどちらも急激に減少するかもしれません。これはモデルが学習している兆候です。しかし、訓練データセットの損失が特定エポック以降も減少し続けているのに対し、検証データセットの損失は停滞するかもしれません。これは、モデルは依然として学習しているが、そのエポック以降は過剰適合しているという兆候です。
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
