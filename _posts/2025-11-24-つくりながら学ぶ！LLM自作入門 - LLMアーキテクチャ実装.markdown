@@ -1,0 +1,590 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― 事前学習（第3部）"
+date:   2025-11-24 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**事前学習編、その第2部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+## ランダム性をコントロールするデコーディング戦略
+
+ここでは、より独創的なテキストを生成するためのテキスト生成戦略に取り組みます。こうした戦略は「デコーディング戦略」とも呼ばれます。まず、前のgenerate_and_pirnt_sample()関数内で使ったgenerate_text_simple()関数を簡単に再確認します。次に、この関数を改良するためのテクニックとして、**温度スケーリング**と**top-kサンプリング**の2つを取り組みます。
+
+それでは、generate_text_simple()関数を再確認してみましょう。
+
+```python
+tokenizer = tiktoken.get_encoding("gpt2")
+
+token_ids = generate_text_simple(
+    model=model,
+    idx=text_to_token_ids("Every effort moves you", tokenizer).to(inference_device),
+    max_new_tokens=25,
+    context_size=GPT_CONFIG_124M["context_length"]
+)
+
+print("Output text:\n", token_ids_to_text(token_ids, tokenizer))
+
+## Output text:
+## Every effort moves you?"
+
+## "Yes--quite insensible to the irony. She wanted him vindicated--and by me!"
+```
+
+今の状態では、各生成ステップで、語彙内のすべてのトークンのうち確率スコアが最も大きいものが選択され、トークンとして生成されます。つまり、同じ開始コンテキストで複数回実行したところで、LLMは常に同じ出力を生成します。
+
+### 温度スケーリング
+
+では、温度スケーリング（temperature scaling）から見ていきましょう。温度スケーリングは、次のトークンを生成するタスクに確率的な選択プロセスを追加するテクニックです。これまでは、generate_text_simple()関数内でtorch.argmax()を使って、常に確率が最も高いトークンを次に来るトークンとして選択していました。このような戦略を貪欲なデコーディング（greedy decoding）と呼びます。より多様なテキストを生成するために、torch.argmax()を確率分布（この場合は、トークン生成ステップごとに語彙の各エントリに対してLLMが生成する確率スコア）からサンプリングする関数に置き換えます。
+
+確率的サンプリングを理解するために、次の例えでは非常に小さな語彙を使います。
+
+```python
+vocab = { 
+    "closer": 0,
+    "every": 1, 
+    "effort": 2, 
+    "forward": 3,
+    "inches": 4,
+    "moves": 5, 
+    "pizza": 6,
+    "toward": 7,
+    "you": 8,
+} 
+
+inverse_vocab = {v: k for k, v in vocab.items()}
+```
+
+次に、LLMに"every effort moves you"という開始コンテキストが与えられ、次に来るトークンを生成するためのロジットが次のように生成されたとします。
+
+```python
+next_token_logits = torch.tensor(
+    [4.51, 0.89, -1.90, 6.75, 1.63, -1.62, -1.89, 6.28, 1.79]
+)
+```
+
+generate_text_simple()関数の内部では、torch.softmax()関数を使ってロジットを確率に変換し、torch.argmax()関数を使って次に来るトークンに対応するトークンIDを取得しています。このトークンIDは逆引き語彙を使ってテキストに戻すことができます。
+
+```python
+probas = torch.softmax(next_token_logits, dim=0)
+next_token_id = torch.argmax(probas).item()
+
+print(inverse_vocab[next_token_id])
+```
+
+確率的サンプリングを実装するために、torch.argmax()関数をPyTorchのtorch.multinomial()関数に置き換えてみましょう。
+
+```python
+torch.manual_seed(123)
+next_token_id = torch.multinomial(probas, num_samples=1).item()
+print(inverse_vocab[next_token_id])
+```
+
+torch.multinomial()関数は、次に来るトークンをその確率スコアに比例する形でサンプリングします。つまり、"forward"は依然として最も可能性の高いトークンであり、torch.multinomial()によってほとんどの場合に選択されます（ただし、確率的サンプリングなので、毎回選択されるわけではありません）。このことを具体的に示すために、このサンプリングを100回繰り返す関数を実装してみましょう。
+
+```python
+def print_sampled_tokens(probas):
+    torch.manual_seed(123)
+    sample = [torch.multinomial(probas, num_samples=1).item() for i in range(1_000)]
+    sampled_ids = torch.bincount(torch.tensor(sample), minlength=len(probas))
+    for i, freq in enumerate(sampled_ids):
+        print(f"{freq} x {inverse_vocab[i]}")
+
+print_sampled_tokens(probas)
+
+# 73 x closer
+# 0 x every
+# 0 x effort
+# 582 x forward
+# 2 x inches
+# 0 x moves
+# 0 x pizza
+# 343 x toward
+# 0 x you
+```
+
+"forward"はほとんどの場合に（1,000回中582回）サンプリングされますが、"closer"、"inches"、"toward"といった他のトークンもサンプリングされることがあります。
+
+温度スケーリングという概念を導入すると、確率分布と選択プロセスをされにコントロールできます。温度スケーリングは、0よりも大きい数でロジットを割ることに対するもったいぶった言い方です。
+
+```python
+def softmax_with_temperature(logits, temperature):
+    scaled_logits = logits / temperature
+    return torch.softmax(scaled_logits, dim=0)
+```
+
+温度が1よりも高い場合、トークンの確率分布はより均一な分布になり、1よりも低い場合は、より確信的な（より鋭く、尖った）分布になります。このことを具体的に示すために、元の確率と、異なる温度設定でスケーリングした確率を並べてプロットしてみましょう。
+
+```python
+# 温度の値
+temperatures = [1, 0.1, 5]  # 元の確信度、高い確信度、低い確信度
+
+scaled_probas = [softmax_with_temperature(next_token_logits, T) for T in temperatures]
+
+x = torch.arange(len(vocab))
+bar_width = 0.15
+
+fig, ax = plt.subplots(figsize=(5, 3))
+for i, T in enumerate(temperatures):
+    rects = ax.bar(x + i * bar_width, scaled_probas[i], bar_width, label=f'Temperature = {T}')
+
+ax.set_ylabel('Probability')
+ax.set_xticks(x)
+ax.set_xticklabels(vocab.keys(), rotation=90)
+ax.legend()
+
+plt.tight_layout()
+plt.savefig("temperature-plot.pdf")
+plt.show()
+```
+
+温度が1の場合は、ロジットをsoftmax()関数に渡して確率スコアを計算する前に、ロジットを1で割ります。つまり、温度を1に設定することは、温度スケーリングを使わないことと同じです。この場合は、PyTorch
+のmultinomial()関数により、トークンが元のソフトマックス確率スコアと同じ確率で選択されます。
+
+温度を1にすると、語彙の各トークンのスケールされていない確率スコアがプロットされます。温度を0.1に下げると、尖った分布になり、最も可能性が高いトークン（この場合は"forward"）の確率スコアがさらに高くなります。温度を5まで上げると、分布はより均一になります。
+
+温度設定を高くすれば、生成されるテキストの多様性を高めることができますが、意味不明なテキストが生成されるケースも増えることになります。
+
+### top-kサンプリング
+
+温度設定が高いほど次のトークンの確率分布が一様になり、最も確率が高いトークンをモデルが繰り返し選択する可能性が低くなるため、より多様な出力が得られることがわかりました。この手法により、テキスト生成プロセスにおいて、可能性は低いものの、より興味深く創造的なパスの探索が可能になります。この手法の欠点は、"every effort moves you pizza"のような、文法的に正しくない、または完全に意味不明な出力につながる場合があることです。
+
+top-kサンプリング（top-k sampling）を確率的サンプリングや温度スケーリングと組み合わせると、テキスト生成の結果を改善することができます。top-kサンプリングでは、選択の対象となるトークンを最も可能性が高い上位k個のトークンに限定できます。それ以外のトークンについては、それらの確率スコアをマスクすることで選択プロセスから除外できます。
+
+たとえば、k=3のtop-kサンプリングを使って、ロジットが最も大きい3つのトークンに焦点を合わせ、それ以外のトークンをすべて負の無限大（-inf）でマスクした後、softmax関数を適用します。その結果、上位3つのトークン以外は確率に0が割り当てられた確率分布が得られます。
+
+top-kサンプリングでは、選択の対象ではないロジットを負の無限大（-inf）に置き換えます。これにより、ソフトマックス確率を計算するときに、上位k個のトークンの確率スコアが合計で1になり、それ以外のトークンの確率スコアは0になります（このマスクトリックからCausal Attentionモジュールを連想するかもしれません）。
+
+```python
+top_k = 3
+top_logits, top_pos = torch.topk(next_token_logits, top_k)
+
+print("Top logits:", top_logits)
+print("Top positions:", top_pos)
+
+# Top logits: tensor([6.7500, 6.2800, 4.5100])
+# Top positions: tensor([3, 7, 0])
+```
+
+続いて、PyTorchのtorch.where()関数を使って、ロジットの大きさが上位3つに含まれないトークンのロジットを負の無限大（-inf）に設定します。
+
+```python
+new_logits = torch.where(
+    condition=next_token_logits < top_logits[-1],
+    input=torch.tensor(float("-inf")), 
+    other=next_token_logits
+)
+
+# new_logits = torch.full_like( # -inf値を含めるテンソルを生成
+   # next_token_logits, -torch.inf
+# )   
+# new_logits[top_pos] = next_token_logits[top_pos] # top k値を-infテンソルにコピー
+
+print(new_logits)
+```
+
+結果として、この9トークンの語彙では、次に選択されるトークンのロジットは以下のようになります。
+
+```python
+tensor([4.5100,   -inf,   -inf, 6.7500,   -inf,   -inf,   -inf, 6.2800,   -inf])
+```
+
+最後に、softmax()関数を適用して、これらのロジットを次に来るトークンの確率に変換してみましょう。
+
+```python
+topk_probas = torch.softmax(new_logits, dim=0)
+print(topk_probas)
+```
+
+このtop-3サンプリングの結果として、0ではない3つの確率スコアが得られます。
+
+```python
+tensor([0.0615, 0.0000, 0.0000, 0.5775, 0.0000, 0.0000, 0.0000, 0.3610, 0.0000])
+```
+
+これで、確率的サンプリングのための温度スケーリングとmultinomial()関数を使って、この3つの0ではない確率スコアの中から次に来るトークンを選択できるようになりました。
+
+### テキスト生成関数の修正
+
+では、温度スケーリングとtop-kサンプリングを組み合わせて、LLMによるテキストの生成に使ったgenerate_text_simple()関数を書き換えて、generate()という新しい関数を作成してみましょう。
+
+```python
+def generate(model, idx, max_new_tokens, context_size, temperature=0.0, top_k=None, eos_id=None):
+
+    # Forループは依然と同じで、ロジットを取得し、最後の時間ステップにのみ注目する
+    for _ in range(max_new_tokens):
+        idx_cond = idx[:, -context_size:]
+        with torch.no_grad():
+            logits = model(idx_cond)
+        logits = logits[:, -1, :]
+
+        # top_kサンプリングでロジットをフィルタリング
+        if top_k is not None:
+            top_logits, _ = torch.topk(logits, top_k)
+            min_val = top_logits[:, -1]
+            logits = torch.where(logits < min_val, torch.tensor(float("-inf")).to(logits.device), logits)
+
+        # 温度スケーリングを適用
+        if temperature > 0.0:
+            logits = logits / temperature
+
+            # MPSデバイスで同じ結果を得るための数値的な安定性を与えるコード
+            logits = logits - logits.max(dim=-1, keepdim=True).values
+            
+            probs = torch.softmax(logits, dim=-1)  # (batch_size, context_len)
+
+            idx_next = torch.multinomial(probs, num_samples=1)  # (batch_size, 1)
+
+        # 温度スケーリングが無効の場合は、以前と同様に貪欲なデコーディングを実行
+        else:
+            idx_next = torch.argmax(logits, dim=-1, keepdim=True)  # (batch_size, 1)
+
+        if idx_next == eos_id:  # シーケンス終了トークンが検出された場合は、生成を早期終了
+            break
+
+        idx = torch.cat((idx, idx_next), dim=1)  # (batch_size, num_tokens+1)
+
+    return idx
+```
+
+では、この新しいgenerate()関数を実際に使ってみましょう。
+
+```python
+torch.manual_seed(123)
+
+token_ids = generate(
+    model=model,
+    idx=text_to_token_ids("Every effort moves you", tokenizer).to(inference_device),
+    max_new_tokens=15,
+    context_size=GPT_CONFIG_124M["context_length"],
+    top_k=25,
+    temperature=1.4
+)
+
+print("Output text:\n", token_ids_to_text(token_ids, tokenizer))
+```
+
+## PyTorchでのモデルの重みの保存と読み込み
+
+LLMの事前学習は計算量が膨大で、コストがかかります。したがって、LLMを保存できるようにすることは重要です。そうすれば、新しいセッションでLLMを使いたくなるたびに再訓練を行わずに済むようになります。
+
+ありがたいことに、PyTorchモデルの保存は比較的簡単です。推奨される方法は、torch.save()関数を使って、モデルのstate_dictを保存することです。state_dictは、各層をそのパラメータにマッピングするディクショナリです。
+
+```python
+torch.save(model.state_dict(), "model.pth")
+```
+
+"model.pth"は、state_dictを保存するファイルの名前です。.pthはPyTorchファイルの慣例的な拡張子ですが、厳密には、どのような拡張子を使ってもかまいません。
+
+state_dictを使ってモデルの重みを保存した後は、その重みをGPTModelインスタンスに読み込むことができます。
+
+```python
+model = GPTModel(GPT_CONFIG_124M)
+model.load_state_dict(torch.load("model.pth", map_location=device))
+model.eval()
+```
+
+train_model_simple()関数を使ってモデルの事前学習を引き続き行う予定がある場合は、オプティマイザの状態も保存しておくことも重要です。
+
+AdamWのような適応型オプティマイザは、各モデルの重みに追加のパラメータを格納します。AdamWは過去のデータをもとに各モデルパラメータの学習率を動的に調整します。このようにしないと、オプティマイザがリセットされ、モデルの学習が最適ではなくなったり、場合によってはうまく収束しなくなったりして、一貫性のあるテキストを生成する能力が損なわれてしまうからです。torch.save()を使うと、モデルとオプティマイザの両方のstate_dictを保存できます。
+
+```python
+torch.save({
+    "model_state_dict": model.state_dict(),
+    "optimizer_state_dict": optimizer.state_dict(),
+    }, 
+    "model_and_optimizer.pth"
+)
+```
+
+続いて、モデルとオプティマイザの状態を復元してみましょう。torch.load()で保存したデータを読み込んだ後、model.load_state_dict()で状態を復元します。
+
+```python
+checkpoint = torch.load("model_and_optimizer.pth", weights_only=True)
+
+model = GPTModel(GPT_CONFIG_124M)
+model.load_state_dict(checkpoint["model_state_dict"])
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.1)
+optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+model.train();
+```
+
+## OpenAIから事前学習済みの重みを読み込む
+
+ありがたいことに、OpenAIはGPT-2モデルの重みを一般に公開しているため、大規模なコーパスでモデルを再訓練するために数万～数十万ドルを投資する必要はなくなっています。そこで、これらの重みをGPTModelクラスに読み込み、テキスト生成に使ってみましょう。ここで言う重みは、たとえばPyTorchのLinear層やEmbedding層のweight属性に格納される重みパラメータのことです。
+
+まず、Configを読み込みます。
+```python
+from importlib.metadata import version
+
+pkgs = ["torch"]
+for p in pkgs:
+    print(f"{p} version: {version(p)}")
+
+BASE_CONFIG = {
+    "vocab_size": 50257,    # Vocabulary size
+    "context_length": 1024, # Context length
+    "drop_rate": 0.0,       # Dropout rate
+    "qkv_bias": True        # Query-key-value bias
+}
+
+model_configs = {
+    "gpt2-small (124M)": {"emb_dim": 768, "n_layers": 12, "n_heads": 12},
+    "gpt2-medium (355M)": {"emb_dim": 1024, "n_layers": 24, "n_heads": 16},
+    "gpt2-large (774M)": {"emb_dim": 1280, "n_layers": 36, "n_heads": 20},
+    "gpt2-xl (1558M)": {"emb_dim": 1600, "n_layers": 48, "n_heads": 25},
+}
+
+
+CHOOSE_MODEL = "gpt2-small (124M)"
+BASE_CONFIG.update(model_configs[CHOOSE_MODEL])
+```
+
+次はモデルダウンロードです。
+
+```python
+import os
+import requests
+
+url = f"https://huggingface.co/rasbt/gpt2-from-scratch-pytorch/resolve/main/{file_name}"
+
+if not os.path.exists(file_name):
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    with open(file_name, "wb") as f:
+        f.write(response.content)
+    print(f"Downloaded to {file_name}")
+
+# Downloaded to gpt2-small-124M.pth
+
+gpt = GPTModel(BASE_CONFIG)
+gpt.load_state_dict(torch.load(file_name, weights_only=True))
+gpt.eval()
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+gpt.to(device)
+```
+
+テキスト生成コードは次となります。
+
+```python
+import tiktoken
+from llms_from_scratch.ch05 import generate, text_to_token_ids, token_ids_to_text
+
+
+torch.manual_seed(123)
+
+tokenizer = tiktoken.get_encoding("gpt2")
+
+token_ids = generate(
+    model=gpt.to(device),
+    idx=text_to_token_ids("Every effort moves", tokenizer).to(device),
+    max_new_tokens=30,
+    context_size=BASE_CONFIG["context_length"],
+    top_k=1,
+    temperature=1.0
+)
+
+print("Output text:\n", token_ids_to_text(token_ids, tokenizer))
+```
+
+他のダウンロード方法としては、safatensorsを使うことができます。
+
+```python
+import os
+import requests
+from safetensors.torch import load_file
+
+file_name = "gpt2-small-124M.safetensors"
+# file_name = "gpt2-medium-355M.safetensors"
+# file_name = "gpt2-large-774M.safetensors"
+# file_name = "gpt2-xl-1558M.safetensors"
+
+url = f"https://huggingface.co/rasbt/gpt2-from-scratch-pytorch/resolve/main/{file_name}"
+
+if not os.path.exists(file_name):
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    with open(file_name, "wb") as f:
+        f.write(response.content)
+    print(f"Downloaded to {file_name}")
+
+# Downloaded to gpt2-small-124M.safetensors
+
+# ファイル読み込み
+gpt = GPTModel(BASE_CONFIG)
+gpt.load_state_dict(load_file(file_name))
+gpt.eval()
+
+token_ids = generate(
+    model=gpt.to(device),
+    idx=text_to_token_ids("Every effort moves", tokenizer).to(device),
+    max_new_tokens=30,
+    context_size=BASE_CONFIG["context_length"],
+    top_k=1,
+    temperature=1.0
+)
+
+print("Output text:\n", token_ids_to_text(token_ids, tokenizer))
+```
+
+Configと重みはどちらもPythonディクショナリです。GPT-2モデルアーキテクチャには、1億2,400万パラメータから15億5,800万パラメータまで、サイズの異なる何種類かのモデルがあります。基本的なアーキテクチャは同じであり、個々のコンポーネント（Attentionヘッド、Transformerブロックなど）の繰り返しの回数と埋め込みサイズでけが異なっています。
+
+GPT-2モデルの重みをPythonセッションにロードした後は、Configと重みの2つのディクショナリからGPTModelに転送する必要があります。
+
+```python
+model_configs = {
+    "gpt2-small (124M)": {"emb_dim": 768, "n_layers": 12, "n_heads": 12},
+    "gpt2-medium (355M)": {"emb_dim": 1024, "n_layers": 24, "n_heads": 16},
+    "gpt2-large (774M)": {"emb_dim": 1280, "n_layers": 36, "n_heads": 20},
+    "gpt2-xl (1558M)": {"emb_dim": 1600, "n_layers": 48, "n_heads": 25},
+}
+```
+
+最も小さいモデルである"gpt2-small (124M)"を読み込みたいとしましょう。この場合は、model_configsディクショナリの対応する設定のもとに、以前に定義したGPT_CONFIG_124Mの内容を更新できます。
+
+```python
+model_name = "gpt2-small (124M)"
+NEW_CONFIG = GPT_CONFIG_124M.copy()
+NEW_CONFIG.update(model_configs[model_name])
+```
+
+本来はトークンの長さ（コンテキスト長）として256を使ってきましたが、OpenAIのオリジナルのGPT-2モデルは1,024のコンテキスト長で訓練されているため、NEW_CONFIGをそのように更新しなければなりません。
+
+```python
+NEW_CONFIG.update({"context_length": 1024, "qkv_bias": True})
+```
+
+また、OpenAIは、クエリ、キー、値の行列計算を実装するために、Multi-head Attentionモジュールの線形層でバイアスベクトルを使っています。バイアスベクトルはモデルの性能の向上に寄与せず、無駄であるため、LLMではあまり使われなくなっています。しかし、ここでは事前学習済みの重みを使っているため、一貫性を保つためにこれらのバイアスベクトルを有効にして、設定を一致させる必要があります。
+
+```python
+NEW_CONFIG.update({"context_length": 1024, "qkv_bias": True})
+
+gpt = GPTModel(NEW_CONFIG)
+gpt.eval()
+```
+
+デフォルトでは、GPTModelインスタンスは事前学習のためにランダムな重みで初期化されます。OpenAIのモデルの重みを使うための最後のステップは、このランダムな重みをダウンロードしたディクショナリの重みで上書きすることです。上記のコードでは、
+
+```
+gpt = GPTModel(BASE_CONFIG)
+gpt.load_state_dict(torch.load(file_name, weights_only=True))
+```
+
+を通じて上書きされています。しかし、重みを別途の変数にPTHONディクショナリに読み込み、手動で上書きする場合は、別途の関数を使う必要がります。そこで、まずassign()という小さなユーティリティ関数を定義します。この関数は、2つのテンソル（配列leftとright）の形状が同じかどうかをチェックし、同じである場合は、訓練可能なPyTorchパラメータとしてrightテンソルを返します。
+
+```python
+def assign(left, right):
+    if left.shape != right.shape:
+        raise ValueError(f"Shape mismatch. Left: {left.shape}, Right: {right.shape}")
+    return torch.nn.Parameter(torch.tensor(right))
+```
+
+次に、load_weights_into_gpt()という関数を定義します。この関数は、そのディクショナリの重みをGPTModelインスタンスgptに読み込みます。
+
+```python
+import numpy as np
+
+# モデルの位置埋め込みとトークン埋め込みの重みをparamsで指定されたものに変更
+def load_weights_into_gpt(gpt, params):
+    gpt.pos_emb.weight = assign(gpt.pos_emb.weight, params['wpe'])
+    gpt.tok_emb.weight = assign(gpt.tok_emb.weight, params['wte'])
+    
+    # モデル内の各Transformerブロックを反復処理
+    for b in range(len(params["blocks"])):
+        q_w, k_w, v_w = np.split(   # np.split関数は、Attentionとバイアスの重みをクエリ―、キー、値に対応するように3等分するために使われる
+            (params["blocks"][b]["attn"]["c_attn"])["w"], 3, axis=-1)
+        gpt.trf_blocks[b].att.W_query.weight = assign(
+            gpt.trf_blocks[b].att.W_query.weight, q_w.T)
+        gpt.trf_blocks[b].att.W_key.weight = assign(
+            gpt.trf_blocks[b].att.W_key.weight, k_w.T)
+        gpt.trf_blocks[b].att.W_value.weight = assign(
+            gpt.trf_blocks[b].att.W_value.weight, v_w.T)
+
+        q_b, k_b, v_b = np.split(
+            (params["blocks"][b]["attn"]["c_attn"])["b"], 3, axis=-1)
+        gpt.trf_blocks[b].att.W_query.bias = assign(
+            gpt.trf_blocks[b].att.W_query.bias, q_b)
+        gpt.trf_blocks[b].att.W_key.bias = assign(
+            gpt.trf_blocks[b].att.W_key.bias, k_b)
+        gpt.trf_blocks[b].att.W_value.bias = assign(
+            gpt.trf_blocks[b].att.W_value.bias, v_b)
+
+        gpt.trf_blocks[b].att.out_proj.weight = assign(
+            gpt.trf_blocks[b].att.out_proj.weight, 
+            params["blocks"][b]["attn"]["c_proj"]["w"].T)
+        gpt.trf_blocks[b].att.out_proj.bias = assign(
+            gpt.trf_blocks[b].att.out_proj.bias, 
+            params["blocks"][b]["attn"]["c_proj"]["b"])
+
+        gpt.trf_blocks[b].ff.layers[0].weight = assign(
+            gpt.trf_blocks[b].ff.layers[0].weight, 
+            params["blocks"][b]["mlp"]["c_fc"]["w"].T)
+        gpt.trf_blocks[b].ff.layers[0].bias = assign(
+            gpt.trf_blocks[b].ff.layers[0].bias, 
+            params["blocks"][b]["mlp"]["c_fc"]["b"])
+        gpt.trf_blocks[b].ff.layers[2].weight = assign(
+            gpt.trf_blocks[b].ff.layers[2].weight, 
+            params["blocks"][b]["mlp"]["c_proj"]["w"].T)
+        gpt.trf_blocks[b].ff.layers[2].bias = assign(
+            gpt.trf_blocks[b].ff.layers[2].bias, 
+            params["blocks"][b]["mlp"]["c_proj"]["b"])
+
+        gpt.trf_blocks[b].norm1.scale = assign(
+            gpt.trf_blocks[b].norm1.scale, 
+            params["blocks"][b]["ln_1"]["g"])
+        gpt.trf_blocks[b].norm1.shift = assign(
+            gpt.trf_blocks[b].norm1.shift, 
+            params["blocks"][b]["ln_1"]["b"])
+        gpt.trf_blocks[b].norm2.scale = assign(
+            gpt.trf_blocks[b].norm2.scale, 
+            params["blocks"][b]["ln_2"]["g"])
+        gpt.trf_blocks[b].norm2.shift = assign(
+            gpt.trf_blocks[b].norm2.shift, 
+            params["blocks"][b]["ln_2"]["b"])
+
+    gpt.final_norm.scale = assign(gpt.final_norm.scale, params["g"])
+    gpt.final_norm.shift = assign(gpt.final_norm.shift, params["b"])
+    # OpenAIのオリジナルのGPT-2モデルは、トークン埋め込み層のパラメータを出力層で再利用することでパラメータの総数を減らしている（重み共有）
+    gpt.out_head.weight = assign(gpt.out_head.weight, params["wte"])
+    
+    
+load_weights_into_gpt(gpt, params)
+gpt.to(device)
+```
+
+load_weights_into_gpt()関数では、OpenAIの実装とGPTModelの実装の重みを慎重にマッチさせています。OpenAIモデルの重みが正しく読み込まれていれば、先のgenerate()関数を使って新しいテキストを生成できるはずです。
+
+```python
+torch.manual_seed(123)
+
+token_ids = generate(
+    model=gpt,
+    idx=text_to_token_ids("Every effort moves you", tokenizer).to(device),
+    max_new_tokens=25,
+    context_size=NEW_CONFIG["context_length"],
+    top_k=50,
+    temperature=1.5
+)
+
+print("Output text:\n", token_ids_to_text(token_ids, tokenizer))
+```
+
+## まとめ
+
+- LLMがテキストを生成するときには、トークンを一度に1つずつ出力します。
+- デフォルトでは、次に来るトークンは、モデルの出力を確率スコアに変換し、最も高い確率スコアに対応するトークンを語彙から選択するという方法で生成されます。これを「貪欲なデコーディング」と呼びます。
+- 確率的サンプリングと温度スケーリングを使って、生成されるテキストの多様性や一貫性をコントロールできます。
+- 訓練データセットと検証データセットでの損失は、LLMが訓練中に生成したテキストの品質を計測するために利用できます。
+- LLMの事前学習では、LLMの重みを変更することで訓練時の損失を最小化します。
+- LLM自体の訓練ループはディープラーニングの標準的な手続きであり、従来の交差エントロピー誤差とAdamWオプティマイザを使います。
+- 大規模なテキストコーパスでのLLMの事前学習には時間がかかり、計算リソースが大量に消費されます。そこで、大規模なデータセットでモデルの事前学習を行う代わりに、公開されている重みを読み込むことができます。
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
