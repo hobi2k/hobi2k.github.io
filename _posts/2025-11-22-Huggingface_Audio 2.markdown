@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "허깅페이스 오디오 트랜스포머 코스 2일차"
+title:  "허깅페이스 오디오 트랜스포머 코스 - 오디오 데이터셋 탐색"
 date:   2025-11-22 00:10:22 +0900
 categories: Huggingface_Audio
 ---
