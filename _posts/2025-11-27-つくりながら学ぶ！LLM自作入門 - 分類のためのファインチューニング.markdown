@@ -1,0 +1,208 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― 分類のためのファインチューニング（第1部）"
+date:   2025-11-27 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**分類のためのファインチューニング編、その第1部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+ここでは、テキスト分類などの具体的なターゲットタスクに基づいてLLMをファインチューニングすることで、努力の成果を味わくことにします。具体的な例えとして、ここではテキストメッセージを"spam"または"not spam"に分類します。
+
+## ファインチューニングのさまざまなカテゴリ
+
+言語モデルをファインチューニングするための最も一般的な方法は、インストラクションチューニング（instruction fine-tuning）と分類チューニング（classification fine-tuning）の2つです。インストラクションチューニングでは、特定の指示を使った一連のタスクで言語モデルを訓練することで、自然言語のプロンプトで表されたタスクを理解して実行する能力を向上させます。
+
+分類チューニングでは、モデルは"spam"や"not spam"といった特定のクラスラベルを認識するように訓練されます。ここで鍵となるのは、「分類チューニングを行ったモデルは、訓練中に遭遇したクラスの予測に限定される」ことです。
+
+LLMを使ったテキスト分類シナリオでは、入力と一緒にさらに指示を与える必要がありません。インストラクションチューニングされたモデルとは対照的に、このモデルは"spam"または"not spam"でしか応答できません。
+
+分類チューニングを行ったモデルは専門性が高いと見なされます。一般的には、さまざまなタスクにうまく対応する汎用的なモデルよりも、専門的なモデルのほうが開発しやすいと言えます。
+
+インストラクションチューニングは、ユーザーからの具体的な指示を理解して応答を生成するモデルの能力を向上させます。このアプローチは、ユーザーからの複雑な指示に基づいてさまざまなタスクに対処する必要があるモデルに最適であり、モデルの柔軟性や対話の品質を向上させます。一方、分類チューニングは、感情分析やスパム検出など、データを事前に定義されたクラスに正確に分類しなければならないプロジェクトに最適です。
+
+インストラクションチューニングのほうが汎用性は高いものの、さまざまなタスクに対応できるモデルを開発するには、大規模なデータセットや大量の計算リソースが必要です。対照的に、分類チューニングは、必要なデータの量や計算リソースは少ないものの、その用途はモデルが訓練された具体的なクラスの分類に限定されます。
+
+## データセットの準備
+
+分類チューニングの直観的で有用な例を提供するために、ここではスパムメッセージとそうではないメッセージで構成されたデータセットを使うことにします。
+
+```python
+import requests
+import zipfile
+import os
+from pathlib import Path
+
+url = "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip"
+zip_path = "sms_spam_collection.zip"
+extracted_path = "sms_spam_collection"
+data_file_path = Path(extracted_path) / "SMSSpamCollection.tsv"
+
+
+def download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path):
+    if data_file_path.exists():
+        print(f"{data_file_path} already exists. Skipping download and extraction.")
+        return
+
+    # ファイルをダウンロード
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+    with open(zip_path, "wb") as out_file:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                out_file.write(chunk)
+
+    # ファイルを解凍
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(extracted_path)
+
+    # ファイル拡張子.tsvを追加
+    original_file_path = Path(extracted_path) / "SMSSpamCollection"
+    os.rename(original_file_path, data_file_path)
+    print(f"File downloaded and saved as {data_file_path}")
+
+
+try:
+    download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path)
+except (requests.exceptions.RequestException, TimeoutError) as e:
+    print(f"Primary URL failed: {e}. Trying backup URL...")
+    url = "https://f001.backblazeb2.com/file/LLMs-from-scratch/sms%2Bspam%2Bcollection.zip"
+    download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path)
+
+"""
+対案的なコード
+import urllib.request
+import zipfile
+import os
+from pathlib import Path
+
+url = "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip"
+zip_path = "sms_spam_collection.zip"
+extracted_path = "sms_spam_collection"
+data_file_path = Path(extracted_path) / "SMSSpamCollection.tsv"
+
+def download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path):
+    if data_file_path.exists():
+        print(f"{data_file_path} already exists. Skipping download and extraction.")
+        return
+
+    # Downloading the file
+    with urllib.request.urlopen(url) as response:
+        with open(zip_path, "wb") as out_file:
+            out_file.write(response.read())
+
+    # Unzipping the file
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(extracted_path)
+
+    # Add .tsv file extension
+    original_file_path = Path(extracted_path) / "SMSSpamCollection"
+    os.rename(original_file_path, data_file_path)
+    print(f"File downloaded and saved as {data_file_path}")
+
+try:
+    download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path)
+except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+    print(f"Primary URL failed: {e}. Trying backup URL...")
+    url = "https://f001.backblazeb2.com/file/LLMs-from-scratch/sms%2Bspam%2Bcollection.zip"
+    download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path)
+"""
+```
+
+このコードを実行すると、データセットがタブ区切りのテキストファイルSMSSpamCollection.tsvとしてsms_spam_collectionフォルダに保存されます。このファイルは次のようにpandasのDataFrameで読み込みできます。
+
+```python
+import pandas as pd
+
+df = pd.read_csv(data_file_path, sep="\t", header=None, names=["Label", "Text"])
+df
+```
+
+クラスラベルの分布を調べてみましょう。
+
+```python
+print(df["Label"].value_counts())
+
+"""
+Label
+ham     4825
+spam     747
+Name: count, dtype: int64
+"""
+```
+
+説明を単純に保つために、また小さなデータセットのほうが（LLMのファインチューニングがより高速になるため）有利なので、それぞれのクラスのインスタンスが747個ずつ含まれるようにデータセットをアンダーサンプリングします。
+
+```python
+def create_balanced_dataset(df):
+    
+    # "spam"インスタンスをカウント
+    num_spam = df[df["Label"] == "spam"].shape[0]
+    
+    # "spam"インスタンスと同じ数になるように"ham"インスタンスをランダムにサンプリング
+    ham_subset = df[df["Label"] == "ham"].sample(num_spam, random_state=123)
+    
+    # "ham"サブセットを"spam"と結合
+    balanced_df = pd.concat([ham_subset, df[df["Label"] == "spam"]])
+
+    return balanced_df
+
+
+balanced_df = create_balanced_dataset(df)
+print(balanced_df["Label"].value_counts())
+
+"""
+Label
+ham     747
+spam    747
+Name: count, dtype: int64
+"""
+```
+
+次に、「文字列」のクラスラベルである"ham"と"spam"をそれぞれ整数のクラスラベル0と1に変換します。
+
+```python
+balanced_df["Label"] = balanced_df["Label"].map({"ham": 0, "spam": 1}) 
+```
+
+このプロセスは、テキストをトークンIDに変換することに似ています。ただし、50,000個以上の単語からなる語彙を使うのではなく、0と1の2つのトークンIDだけを扱います。
+
+次に、このデータセットを3つに分割するrandom_split()関数を作成します。今回は、訓練に70%、検証に10%、テストに20%のデータを使います（これはモデルの訓練、調整、評価を行う機械学習の一般的な比率です）。
+
+```python
+def random_split(df, train_frac, validation_frac):
+    # DataFrame全体をシャッフル
+    df = df.sample(frac=1, random_state=123).reset_index(drop=True)
+
+    # 分割インデックスを計算
+    train_end = int(len(df) * train_frac)
+    validation_end = train_end + int(len(df) * validation_frac)
+
+    # DataFrameを分割
+    train_df = df[:train_end]
+    validation_df = df[train_end:validation_end]
+    test_df = df[validation_end:]
+
+    return train_df, validation_df, test_df
+
+train_df, validation_df, test_df = random_split(balanced_df, 0.7, 0.1)
+# テストデータセットのサイズは残りの0.2
+```
+
+各データセットをCSV（Comma-Separated Value）ファイルとして保存し、あとから再利用できるようにしておきます。
+
+```python
+train_df.to_csv("train.csv", index=None)
+validation_df.to_csv("validation.csv", index=None)
+test_df.to_csv("test.csv", index=None)
+```
+
+これで、データセットをダウンロードし、データを均衡化し、訓練データセット、検証データセット、テストデータセットに分割するタスクは完了です。
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
