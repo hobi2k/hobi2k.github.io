@@ -1,0 +1,316 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― 分類のためのファインチューニング（第2部）"
+date:   2025-11-28 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**分類のためのファインチューニング編、その第2部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+## データローダーの作成
+
+ここで開発するPyTorchデータローダーは、概念的には、テキストデータを扱ったときに実装したものと同じです。そのときは、スライディングウィンドウを利用して均一な大きさのテキストチャンクを生成し、モデルの訓練を効率化するためにそれらのチャンクをバッチにまとめました。チャンクはそれぞれ1つの訓練インスタンスとして機能しました。しかし、ここで扱っているのは、長さがまちまちのテキストメッセージが含まれたスパムデータセットです。これらのメッセージをテキストチャンクのときと同じようにバッチにまとめる方法として、次の2つの選択肢があります。
+
+- すべてのメッセージをデータセットまたはバッチ内で最も短いメッセージと同じ長さに切り揃える。
+- すべてのメッセージをデータセットまたはバッチ内で最も長いメッセージと同じ長さにパディングする。
+
+計算量が少ないのは1つ目の選択肢のほうですが、短いメッセージが平均的な長さのメッセージや最も長いメッセージよりずっと短い場合は大量の情報が失われる可能性があり、結果としてモデルの性能が低下するかもしれません。そこで、すべてのメッセージの内容が完全に維持される2つ目の選択肢を使うことにします。
+
+このバッチ処理（すべてのメッセージをデータセット内の最も長いメッセージと同じ長さにパディングする）を実装するために、すべての短いメッセージにパディングトークンを追加します。今回は、パディングトークンとして"<|endoftext|>"を使います。
+
+ただし、文字列"<|endoftext|>"を各メッセージに直接付け足すのではなく、メッセージをそれぞれトークンIDのシーケンスにエンコードした後、"<|endoftext|>"に対応するトークンIDをこのエンコードされたメッセージに追加します。パディングトークン"<|endoftext|>"のトークンIDは50256です。
+
+```python
+import tiktoken
+
+tokenizer = tiktoken.get_encoding("gpt2")
+print(tokenizer.encode("<|endoftext|>", allowed_special={"<|endoftext|>"}))
+```
+
+データローダーをインスタンス化する前に、データが読み込まれて処理される方法を指定するPyTorchのDatasetを実装する必要があります。
+
+```python
+import torch
+from torch.utils.data import Dataset
+
+
+class SpamDataset(Dataset):
+    def __init__(self, csv_file, tokenizer, max_length=None, pad_token_id=50256):
+        self.data = pd.read_csv(csv_file)
+
+        # テキストを事前にトークン化
+        self.encoded_texts = [
+            tokenizer.encode(text) for text in self.data["Text"]
+        ]
+
+        if max_length is None:
+            self.max_length = self._longest_encoded_length()
+        else:
+            self.max_length = max_length
+            # シーケンスがmax_lengthよりも長い場合は切り詰める
+            self.encoded_texts = [
+                encoded_text[:self.max_length]
+                for encoded_text in self.encoded_texts
+            ]
+
+        # シーケンスを最も長いシーケンスと同じ長さにパディング
+        self.encoded_texts = [
+            encoded_text + [pad_token_id] * (self.max_length - len(encoded_text))
+            for encoded_text in self.encoded_texts
+        ]
+
+    def __getitem__(self, index):
+        encoded = self.encoded_texts[index]
+        label = self.data.iloc[index]["Label"]
+        return (
+            torch.tensor(encoded, dtype=torch.long),
+            torch.tensor(label, dtype=torch.long)
+        )
+
+    def __len__(self):
+        return len(self.data)
+
+    def _longest_encoded_length(self):
+        max_length = 0
+        for encoded_text in self.encoded_texts:
+            encoded_length = len(encoded_text)
+            if encoded_length > max_length:
+                max_length = encoded_length
+        return max_length
+```
+
+SpamDatasetクラスは、先ほど作成したCSVファイルからデータを読み込み、tiktokenのGPT-2トークナイザを使ってテキストをトークン化し、シーケンスを均一な長さ（最も長いシーケンスと同じか、事前に定義されたサイズ）にパディングするか、切り詰めます。これにより、入力テンソルはそれぞれ同じサイズになります。この後に実装する訓練データローダーでバッチを作成するには、入力テンソルの長さが揃っている必要があります。
+
+```python
+train_dataset = SpamDataset(
+    csv_file="train.csv",
+    max_length=None,
+    tokenizer=tokenizer
+)
+
+print(train_dataset.max_length)
+```
+
+このコードの出力は120であり、最も長いシーケンスの長さが、テキストメッセージの一般的な長さである120トークンを超えないことを示しています。このモデルは最大で1,024トークン（コンテキストの長さの上限）のシーケンスに対処できます。これよりも長いテキストがデータセットに含まれている場合は、train_datasetを作成するときにmax_length=1024を渡すと、モデルがサポートしているコンテキスト（入力）の長さをデータが超えないように担保できます。
+
+次に、最も長い訓練シーケンスの長さと一致するように検証データセットとテストデータセットをパディングします。ここで重要なのは、検証データセットとテストデータセットのサンプルのうち最も長い訓練サンプルの長さを超えるものが、先に定義したSpamDatasetクラスのencoded_text[:self.max_length]に基づいて切り詰められることです。
+
+```python
+val_dataset = SpamDataset(
+    csv_file="validation.csv",
+    max_length=train_dataset.max_length,
+    tokenizer=tokenizer
+)
+test_dataset = SpamDataset(
+    csv_file="test.csv",
+    max_length=train_dataset.max_length,
+    tokenizer=tokenizer
+)
+```
+
+これらのデータセットを入力として使うことで、テキストデータを扱ったときと同じようにデータローダーをインスタンス化できます。ただし、この場合のターゲットは次に来るトークンではなく、クラスラベルです。
+
+```python
+from torch.utils.data import DataLoader
+
+num_workers = 0
+batch_size = 8
+
+torch.manual_seed(123)
+
+train_loader = DataLoader(
+    dataset=train_dataset,
+    batch_size=batch_size,
+    shuffle=True,
+    num_workers=num_workers,
+    drop_last=True,
+)
+
+val_loader = DataLoader(
+    dataset=val_dataset,
+    batch_size=batch_size,
+    num_workers=num_workers,
+    drop_last=False,
+)
+
+test_loader = DataLoader(
+    dataset=test_dataset,
+    batch_size=batch_size,
+    num_workers=num_workers,
+    drop_last=False,
+)
+```
+
+これらのデータローダーが機能し、期待されるサイズのバッチを実際に返すことを確認するために、訓練ローダーを繰り返し実行して、最後のバッチのテンソル次元を出力します。
+
+```python
+for input_batch, target_batch in train_loader:
+    pass
+
+print("Input batch dimensions:", input_batch.shape)
+print("Label batch dimensions", target_batch.shape)
+```
+
+## 事前学習済みの重みでモデルを初期化
+
+次は、事前学習済みモデルを読み込みます。まず、設定を用意します。
+
+```python
+CHOOSE_MODEL = "gpt2-small (124M)"
+INPUT_PROMPT = "Every effort moves"
+
+BASE_CONFIG = {
+    "vocab_size": 50257,     # 語彙サイズ
+    "context_length": 1024,  # コンテキストの長さ
+    "drop_rate": 0.0,        # ドロップアウト率
+    "qkv_bias": True         # クエリ、キー、値の計算にバイアスを使うかどうか
+}
+
+model_configs = {
+    "gpt2-small (124M)": {"emb_dim": 768, "n_layers": 12, "n_heads": 12},
+    "gpt2-medium (355M)": {"emb_dim": 1024, "n_layers": 24, "n_heads": 16},
+    "gpt2-large (774M)": {"emb_dim": 1280, "n_layers": 36, "n_heads": 20},
+    "gpt2-xl (1558M)": {"emb_dim": 1600, "n_layers": 48, "n_heads": 25},
+}
+
+BASE_CONFIG.update(model_configs[CHOOSE_MODEL])
+
+assert train_dataset.max_length <= BASE_CONFIG["context_length"], (
+    f"Dataset length {train_dataset.max_length} exceeds model's context "
+    f"length {BASE_CONFIG['context_length']}. Reinitialize data sets with "
+    f"`max_length={BASE_CONFIG['context_length']}`"
+)
+```
+
+次はモデルです。
+
+```python
+from gpt_download import download_and_load_gpt2
+from previous_chapters import GPTModel, load_weights_into_gpt
+
+model_size = CHOOSE_MODEL.split(" ")[-1].lstrip("(").rstrip(")")
+settings, params = download_and_load_gpt2(model_size=model_size, models_dir="gpt2")
+
+model = GPTModel(BASE_CONFIG)
+load_weights_into_gpt(model, params)
+model.eval()
+```
+
+モデルの読み込みが完了したので、テキスト生成関数を読み込みます。
+
+```python
+from previous_chapters import (
+    generate_text_simple,
+    text_to_token_ids,
+    token_ids_to_text
+)
+
+text_1 = "Every effort moves you"
+
+token_ids = generate_text_simple(
+    model=model,
+    idx=text_to_token_ids(text_1, tokenizer),
+    max_new_tokens=15,
+    context_size=BASE_CONFIG["context_length"]
+)
+
+print(token_ids_to_text(token_ids, tokenizer))
+```
+
+## 分類ヘッドの追加
+
+分類チューニングの準備として、事前学習済みのLLMを書き換えなければなりません。隠れ層の表現を50,257語の語彙にマッピングする元の出力層を、2つのクラス（"not spam"を表す0と"spam"を表す1）にマッピングする小さな出力層に置き換えます。
+
+GPTモデルのアーキテクチャを変更することにより、GPTモデルをスパム分類に適応させます。モデルの線形出力層は、もともとは768個の隠れユニットを50,257語の語彙にマッピングしていました。スパムを検出するために、この出力層を新しい出力層に置き換えます。新しい出力層は同じ768の隠れユニットを"spam"と"not spam"の2つのクラスにマッピングします。
+
+GPTModelは、埋め込み層、それに続く12個の同一のTransformerブロック、そして最後のLayerNormと出力層out_headで構成されています。
+
+今回は事前学習済みのモデルで作業を開始するため、モデルのすべての層をファインチューニングする必要はありません。ニューラルネットワークベースの言語モデルでは、低いほうの（入力に近い）層は一般に幅広いタスクやデータセットに適用できる基本的な言語構造やセマンティクスを捉えます。したがって、多くの場合は、言語上の微妙なパターンやタスク固有の特徴量に特化した最後の（出力に近い）層だけをファインチューニングすれば、モデルを新しいタスクに適応させるのに十分です。また、少数の層だけをファインチューニングするほうが計算効率がよいという、うれしい副作用もあります。
+
+モデルを分類チューニング対応にするために、まずモデルを凍結（freeze）します。モデルを凍結すると、すべての層が訓練不可能になります。
+
+```python
+for param in model.parameters():
+    param.requires_grad = False
+```
+
+続いて、出力層（model.out_head）を置き換えます。元の出力層は、層の入力を語彙サイズである50,257次元にマッピングします。
+
+```python
+torch.manual_seed(123)
+
+num_classes = 2
+model.out_head = torch.nn.Linear(in_features=BASE_CONFIG["emb_dim"], out_features=num_classes)
+```
+
+コードをより一般的なものにするために、BASE_CONFIG["emb_dim"]を使っています。この設定は、"gpt2_small (124M)"モデルでは768です。このようにしておくと、同じコードを使ってより大きなGPT-2モデルもファインチューニングできます。
+
+この新しい出力層model.out_headのrequres_grad属性は、デフォルトではTrueに設定されています。つまり、この層はモデルにおいて訓練中に更新される唯一の層です。技術的には、ここで追加したばかりの出力層を訓練すれば十分です。しかし、追加の層もファインチューニングすると、モデルの予測性能を著しく向上することが実験でわかっています。そこで、最後のTransformerブロックと、（このブロックを出力層に接続する）最後のLayerNormモジュールも訓練可能にします。
+
+GPTモデルでは、Transformerブロックが12回繰り返されます。出力層に加えて、最後のLayerNormと最後のTransformerブロックを訓練可能に設定します。残りの11個のTransformerブロックと埋め込み層は訓練不可能なままにします。
+
+最後のLayerNormと最後のTransformerブロックを訓練可能にするために、それぞれのrequires_gradをTrueに設定します。
+
+```python
+for param in model.trf_blocks[-1].parameters():
+    param.requires_grad = True
+
+for param in model.final_norm.parameters():
+    param.requires_grad = True
+```
+
+出力層を新しいものに置き換え、特定の層を訓練可能または訓練不可能にした後も、このモデルをこれまでと同じように使うことができます。
+
+```python
+inputs = tokenizer.encode("Do you have time")
+inputs = torch.tensor(inputs).unsqueeze(0)
+print("Inputs:", inputs)
+print("Inputs dimensions:", inputs.shape) # 形状は(batch_size, num_tokens)
+
+# Inputs: tensor([[5211,  345,  423,  640]])
+#Inputs dimensions: torch.Size([1, 4])
+```
+
+このエンコードされたトークンIDを以前と同じようにモデルに渡すことができます。
+
+```python
+with torch.no_grad():
+    outputs = model(inputs)
+
+print("Outputs:\n", outputs)
+print("Outputs dimensions:", outputs.shape) # 形状は(batch_size, num_tokens, num_classes)
+
+"""
+Outputs:
+ tensor([[[-1.5854,  0.9904],
+         [-3.7235,  7.4548],
+         [-2.2661,  6.6049],
+         [-3.5983,  3.9902]]])
+Outputs dimensions: torch.Size([1, 4, 2])
+"""
+```
+
+以前は、同じ入力を渡すと形状が[1, 4, 50257]の出力テンソルが生成されていました（50257は語彙のサイズを表しています）。出力の行数は入力トークンの数（この場合は4）に対応しています。ただし、モデルの出力層を置き換えたので、各出力の埋め込み次元（列の数）は50,257ではなく2になっています。また、スパム分類を無垢的としてモデルをファインチューニングする際には、最後のトークンに対応する最後の行にのみ着目します。
+
+出力テンソルから最後の出力トークンを抽出するコードは次のようになります。
+
+```python
+print("Last output token:", outputs[:, -1, :])
+
+# Last output token: tensor([[-3.5983,  3.9902]])
+```
+
+これらの値をされに予測値（クラスラベル）に変換する必要がありますが、その前に、なぜ最後の出力トークンにのみ着目するのかを理解しておきましょう。
+
+AttentionメカニズムとCausal Attentionマスクの概念については、以前説明しました。Attentionメカニズムは、各入力トークンと他のすべての入力トークンの間の関係を確率します。Causal AttentionマスクはGPT型のモデルでよく使われるので、トークンの注意を現在の位置とその前にあるトークンに限定します。このようにすると、各トークンに影響を与えるトークンがそのトークン自身とその前にあるトークンだけになります。最後のトークンは、他のすべてのトークンに対するAttentionスコアを持つ唯一のトークンです。
+
+Causal Attentionマスクの設定によれば、シーケンス内の最後のトークンは、シーケンス内のすべてのデータにアクセスできる唯一のトークンであり、最も多くの情報を蓄積します。このスパム分類マスクのファインチューニングプロセスで、この最後のトークンに焦点を合わせるのはそのためです。
+
+最後のトークンをクラスラベルに変換し、モデルの最初の予測正解率を計算する準備はこれで完了です。
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
