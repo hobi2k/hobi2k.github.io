@@ -1,0 +1,408 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― インストラクションファインチューニング（第1部）"
+date:   2025-12-02 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**インストラクションファインチューニング編、その第1部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+ここでは、人間の指示に従うようにLLMをファインチューニングするプロセスを実装します。インストラクションチューニングは、チャットボットアプリケーションやパーソナルアシスタントなど、会話的なタスクのためのLLMを開発する主なテクニックの1つです。では、指示データセットを使ってLLMをファインチューニングしてみましょう。
+
+## インストラクションチューニング
+
+LLMの事前学習には、単語を一度に1つずつ生成することを学習する訓練手続きが含まれていることがわかりました。その結果、事前学習されたLLMはテキストを補完する能力を持つようになります。つまり、そうしたLLMは。文章を完成させたり、入力として渡されたテキストから段落を書き起こしたりできます。一方で、事前学習されたLLMは、「このテキストの文法を修正せよ」とか、「このテキストを受動態に変換せＹＰ」といった具体的な指示にうまく対応できないことがあります。後ほど、事前学習済みのLLMをインストラクションチューニングのベースモデルとして読み込む具体的な例を見ていきます。インストラクションチューニングは教師ありインストラクションチューニング（supervised instruction fine-tuning）とも呼ばれます。
+
+ここでは、LLMがそうした指示に従って望ましい応答を生成する能力を向上させることに焦点を合わせます。データセットの準備は、インストラクションチューニングの重要な要素です。
+
+## 教師ありインストラクションチューニングのためのデータセットの準備
+
+まず、事前学習済みのLLMのインストラクションチューニングに使う指示データセットをダウンロードし、フォーマットします。このデータセットのは、指示と応答のペアが1,100個含まれています。
+
+このデータセットをダウンロードしてデータを読み込む関数を作成してみましょう。このデータセットは、JSONフォーマットの比較的に小さなファイルです。JSON（JavaScript Object Notation）はPythonのディクショナリ（辞書）の構造を反映しており、ヒューマンリーダブルかつマシンフレンドリーな、データ交換のためのシンプルな構造を提供します。
+
+```python
+import json
+import os
+import requests
+
+
+def download_and_load_file(file_path, url):
+    if not os.path.exists(file_path):
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        text_data = response.text
+        with open(file_path, "w", encoding="utf-8") as file:
+            file.write(text_data)
+
+    with open(file_path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    return data
+
+"""
+import urllib
+
+def download_and_load_file(file_path, url):
+
+    if not os.path.exists(file_path):
+        with urllib.request.urlopen(url) as response:
+            text_data = response.read().decode("utf-8")
+        with open(file_path, "w", encoding="utf-8") as file:
+            file.write(text_data)
+
+    else:
+        with open(file_path, "r", encoding="utf-8") as file:
+            text_data = file.read()
+
+    with open(file_path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    return data
+"""
+
+
+file_path = "instruction-data.json"
+url = (
+    "https://raw.githubusercontent.com/rasbt/LLMs-from-scratch"
+    "/main/ch07/01_main-chapter-code/instruction-data.json"
+)
+
+data = download_and_load_file(file_path, url)
+print("Number of entries:", len(data))
+```
+
+エントリを1つ出力して、各エントリがどのような構造になっているか確認してみます。
+
+```python
+print("Example entry:\n", data[50])
+
+Example entry:
+ {'instruction': 'Identify the correct spelling of the following word.', 'input': 'Ocassion', 'output': "The correct spelling is 'Occasion.'"}
+```
+
+このサンプルエントリはPythonのディクショナリオブジェクトであり、'instruction'、'input'、'output'を含んでいることがわかります。別のサンプルを調べてみましょう。
+
+```python
+print("Another example entry:\n", data[999])
+
+Another example entry:
+ {'instruction': "What is an antonym of 'complicated'?", 'input': '', 'output': "An antonym of 'complicated' is 'simple'."}
+ ```
+
+このエントリの内容からすると、'input'フィールドは空の場合があるようです。インストラクションチューニングでは、このJSONファイルから抽出したような入力と出力のペアが明示的に指定されたデータセットを使って、モデルを訓練します。これらのエントリをLLM用にフォーマットする方法はさまざまです。そのうちの2種類のフォーマットがAlpacaとPhi-3です。これらのフォーマットはAlpacaやPhi-3といったよく知られているLLMの訓練に使われているもので、よくプロンプトスタイル（prompt style）と呼ばれます。
+
+LLMのインストラクションチューニング用のプロンプトスタイルを比較してみましょう。Alpacaスタイルは指示、入力、応答のセクションが定義された構造化フォーマットを使っており、Phi-3スタイルは`<|user|>`トークンと`<|assistant|>`トークンに基づくよりシンプルなフォーマットを使います。
+
+Alpacaは、インストラクションチューニングプロセスの詳細を一般に公開した初期のLLMの1つでした。Phi-3は、Microsoftによって開発されたプロンプトスタイルです。ここではAlpacaプロンプトスタイルを使います。Alpacaがファインチューニングに対する独自のアプローチを定義するのに役立つことも大きな決め手の1つでした。
+
+dataリストのエントリをAlpacaスタイルの入力フォーマットに変換します。
+
+```python
+def format_input(entry):
+    instruction_text = (
+        f"Below is an instruction that describes a task. "
+        f"Write a response that appropriately completes the request."
+        f"\n\n### Instruction:\n{entry['instruction']}"
+    )
+
+    input_text = f"\n\n### Input:\n{entry['input']}" if entry["input"] else ""
+
+    return instruction_text + input_text
+```
+
+このformat_input()関数は、入力としてディクショナリのエントリ（entry）を受け取り、フォーマット済みの文字列を組み立てます。
+
+```python
+model_input = format_input(data[50])
+desired_response = f"\n\n### Response:\n{data[50]['output']}"
+
+print(model_input + desired_response)
+
+Below is an instruction that describes a task. Write a response that appropriately completes the request.
+
+### Instruction:
+Identify the correct spelling of the following word.
+
+### Input:
+Ocassion
+
+### Response:
+The correct spelling is 'Occasion.'
+```
+
+format_input()関数は、'input'フィールドが空の場合は## Input:セクションが出力しないことに注意してください。
+
+```python
+model_input = format_input(data[999])
+desired_response = f"\n\n### Response:\n{data[999]['output']}"
+
+print(model_input + desired_response)
+
+Below is an instruction that describes a task. Write a response that appropriately completes the request.
+
+### Instruction:
+What is an antonym of 'complicated'?
+
+### Response:
+An antonym of 'complicated' is 'simple'.
+```
+
+次はこのデータセットを訓練データセット、検証データセット、テストデータセットに分割しておきましょう。
+
+```python
+train_portion = int(len(data) * 0.85)  # 85%のデータを訓練に使用
+test_portion = int(len(data) * 0.1)    # 10%のデータをテストに使用
+val_portion = len(data) - train_portion - test_portion  # 残りの5%のデータを検証に使用
+
+train_data = data[:train_portion]
+test_data = data[train_portion:train_portion + test_portion]
+val_data = data[train_portion + test_portion:]
+
+print("Training set length:", len(train_data))
+print("Validation set length:", len(val_data))
+print("Test set length:", len(test_data))
+
+# Training set length: 935
+# Validation set length: 55
+# Test set length: 110
+```
+
+## データを訓練バッチにもとめる
+
+次のステップでは、訓練バッチを効果的に構築する方法に焦点を合わせ、ファインチューニングの際にフォーマット済みの訓練データがモデルに確実に渡されるようにします。
+
+前は、訓練バッチはPyTorchのDataLoaderクラスによって自動的に作成されましたが、このクラスはサンプルのリストをバッチにまとめるためにデフォルトのcollate関数を使います。collate関数は、個々のデータサンプリングのリストを1つのバッチにまとめて、訓練中にモデルが効率よく処理できるようにするという役割を果たします。
+
+しかし、インストラクションチューニングでのバッチの構築はもう少し複雑で、カスタムcollate関数を作成してDataLoaderに統合する必要があります。カスタムcollate関数を実装するのは、インストラクションチューニング用のデータセットに固有な要件とフォーマットに対処するためです。
+
+それでは、カスタムcollate関数の実装を含め、いくつかのステップに分けてバッチ構築プロセスに取り組むことにします。まず、InstructionDatasetクラスを実装します。このクラスはformat_input()と事前トークン化をデータセットのすべての入力に適用します。
+
+バッチ構築プロセスを実装するための5つのサブステップは、(1)プロンプトテンプレートを適用し、(2)トークン化し、(3)パディングトークンを追加し、(4)ターゲットトークンIDを作成し、(5)誤差関数でパディングトークンをマスクするためプレースホルダトークン-100に置き換えることです。
+
+```python
+import torch
+from torch.utils.data import Dataset
+
+
+class InstructionDataset(Dataset):
+    def __init__(self, data, tokenizer):
+        self.data = data
+
+        # テキストを事前トークン化
+        self.encoded_texts = []
+        for entry in data:
+            instruction_plus_input = format_input(entry)
+            response_text = f"\n\n### Response:\n{entry['output']}"
+            full_text = instruction_plus_input + response_text
+            self.encoded_texts.append(
+                tokenizer.encode(full_text)
+            )
+
+    def __getitem__(self, index):
+        return self.encoded_texts[index]
+
+    def __len__(self):
+        return len(self.data)
+```
+
+今回は、分類チューニングで使ったアプローチと同様に、複数の訓練サンプルをバッチにまとめて訓練を高速化したいと考えています。訓練サンプルをバッチにまとめるには、すべての入力を同じ長さにパディングしなければなりません。分類チューニングのときと同様に、パディングトークンとして`<|endoftext|>`を使います。
+
+`<|endoftext|>`トークンをテキスト入力に追加する代わりに、`<|endoftext|>`に対応するトークンIDを、事前トークン化された入力に直接付け足すことができます。
+
+```python
+import tiktoken
+tokenizer = tiktoken.get_encoding("gpt2")
+
+print(tokenizer.encode("<|endoftext|>", allowed_special={"<|endoftext|>"}))
+```
+
+トークンIDは50256です。
+
+次のステップでは、データローダーに渡せるカスタムcollate関数を開発するという、より洗練されたアプローチをとります。このカスタムcollate関数は、各バッチ内の訓練サンプルを同じ長さにパディングする一方、バッチごとに長さが違ってもよいようにします。このようにすると、データセット全体ではなく、各バッチ内で最も長い訓練サンプルと同じ長さになるようにシーケンスを拡張するだけでよいため、無駄なパディングを最小限に抑えることができます。
+
+```python
+def custom_collate_draft_1(
+    batch,
+    pad_token_id=50256,
+    device="cpu"
+):
+    # バッチ内で最も長いシーケンスを特定
+    batch_max_length = max(len(item)+1 for item in batch)
+
+    inputs_lst = []
+
+    # 入力のパディングと準備
+    for item in batch:
+        new_item = item.copy()
+        new_item += [pad_token_id]
+
+        padded = (
+            new_item + [pad_token_id] *
+            (batch_max_length - len(new_item))
+        )
+
+        # paddedに追加した余分なパディングトークンを削除
+        inputs = torch.tensor(padded[:-1])
+        inputs_lst.append(inputs)
+
+    # 入力のリストをテンソルに変換し、ターゲットデバイスに転送
+    inputs_tensor = torch.stack(inputs_lst).to(device)
+    return inputs_tensor
+```
+
+custom_collate_draft_1()はPyTorchのDataLoaderに統合することを目的として設計されていますが、スタンドアロンツールとしても実行できます。
+
+```python
+inputs_1 = [0, 1, 2, 3, 4]
+inputs_2 = [5, 6]
+inputs_3 = [7, 8, 9]
+
+batch = (
+    inputs_1,
+    inputs_2,
+    inputs_3
+)
+
+print(custom_collate_draft_1(batch))
+
+"""
+tensor([[    0,     1,     2,     3,     4],
+        [    5,     6, 50256, 50256, 50256],
+        [    7,     8,     9, 50256, 50256]])
+"""
+```
+
+この出力は、すべての入力が最も長い入力リストinputs_1と同じ長さにパディングされることと、5つのトークンIDを含んでいることを示しています。
+
+入力のリストからバッチを作成する最初のカスタムcollate関数の実装はこれで完了です。しかし、すでにみたように、入力トークンIDのバッチに対応するターゲットトークンIDのバッチも作成する必要があります。これらのターゲットトークンIDは非常に重要です。なぜなら、それらのトークンIDはモデルに生成させたいトークンを表しており、訓練中に重みを更新するための誤差（損失）を計算するために必要だからです。
+
+LLMの事前学習で使ったプロセスと同様に、ターゲットトークンIDは入力トークンIDを右に1つずらしたものです。つまり、各入力シーケンスに対応するターゲットシーケンスは、入力シーケンスのトークンIDを右に1つずらし、最初のトークンを省いて、最後にeotトークンを追加したものです。
+
+次に示す更新されたcollate関数は、入力トークンIDからターゲットトークンIDを生成します。
+
+```python
+def custom_collate_draft_2(
+    batch,
+    pad_token_id=50256,
+    device="cpu"
+):
+    batch_max_length = max(len(item)+1 for item in batch)
+
+    inputs_lst, targets_lst = [], []
+
+    for item in batch:
+        new_item = item.copy()
+        new_item += [pad_token_id]
+        padded = (
+            new_item + [pad_token_id] *
+            (batch_max_length - len(new_item))
+        )
+        inputs = torch.tensor(padded[:-1])  # 入力の最後のトークンを切り捨て
+        targets = torch.tensor(padded[1:])  # ターゲットのために右に1つシフト
+        inputs_lst.append(inputs)
+        targets_lst.append(targets)
+
+    inputs_tensor = torch.stack(inputs_lst).to(device)
+    targets_tensor = torch.stack(targets_lst).to(device)
+    return inputs_tensor, targets_tensor
+```
+
+この新しいcustom_collate_draft_2()関数を、先に定義した3つの入力リストからなるサンプルバッチに適用すると、入力バッチとターゲットを返すようになったことがわかります。
+
+```python
+inputs, targets = custom_collate_draft_2(batch)
+print(inputs)
+print(targets)
+
+"""
+tensor([[    0,     1,     2,     3,     4],
+        [    5,     6, 50256, 50256, 50256],
+        [    7,     8,     9, 50256, 50256]])
+tensor([[    1,     2,     3,     4, 50256],
+        [    6, 50256, 50256, 50256, 50256],
+        [    8,     9, 50256, 50256, 50256]])
+"""
+```
+
+次のステップでは、すべてのパディングトークンにプレースホルダ-100を割り当てます。この特別な値を使って、これらのパディングトークンを訓練誤差の計算から除外すると、意味のあるデータだけがモデルの学習に影響を与えるようになります。
+
+ただし、ターゲットシーケンスにeotトークンID（50256）を1つ残しておくことに注意してください。このトークンを残しておくと、指示に対する応答でeotトークンを生成するタイミングをLLMが学習できるようになり、生成された応答が完全であるという目印としてeotトークンが使われるようになります。
+
+これを実装するために、カスタムcollate関数を修正し、ターゲットリストのID 50256のトークンを-100に置き換えます。さらに、allowed_max_lengthパラメータを導入し、必要に応じてサンプルの長さを制限します。独自のデータセットを使う予定であり、そのコンテキストサイズがGPT-2モデルでサポートされているサイズ（1,024トークン）を超える場合は、このパラメータが役立つでしょう。
+
+```python
+def custom_collate_fn(
+    batch,
+    pad_token_id=50256,
+    ignore_index=-100,
+    allowed_max_length=None,
+    device="cpu"
+):
+    batch_max_length = max(len(item)+1 for item in batch)
+
+    inputs_lst, targets_lst = [], []
+
+    for item in batch:
+        new_item = item.copy()
+        new_item += [pad_token_id]
+        # シーケンスをmax_lengthまでパディング
+        padded = (
+            new_item + [pad_token_id] *
+            (batch_max_length - len(new_item))
+        )
+        inputs = torch.tensor(padded[:-1])  # inputsでは最後のトークンを切り捨て
+        targets = torch.tensor(padded[1:])  # targetsでは右に1つシフト
+
+        # targetsの最初のパディングトークン以外はすべてignore_indexで置き換え
+        mask = targets == pad_token_id
+        indices = torch.nonzero(mask).squeeze()
+        if indices.numel() > 1:
+            targets[indices[1:]] = ignore_index
+
+        # 必要に応じてシーケンスの最大の長さで切り捨て
+        if allowed_max_length is not None:
+            inputs = inputs[:allowed_max_length]
+            targets = targets[:allowed_max_length]
+
+        inputs_lst.append(inputs)
+        targets_lst.append(targets)
+
+    inputs_tensor = torch.stack(inputs_lst).to(device)
+    targets_tensor = torch.stack(targets_lst).to(device)
+
+    return inputs_tensor, targets_tensor
+```
+
+custom_collate_fn()関数についても、先ほど作成したサンプルバッチで試して、意図したとおりに動作することをチェックしてみましょう。
+
+```python
+inputs, targets = custom_collate_fn(batch)
+print(inputs)
+print(targets)
+
+"""
+tensor([[    0,     1,     2,     3,     4],
+        [    5,     6, 50256, 50256, 50256],
+        [    7,     8,     9, 50256, 50256]])
+tensor([[    1,     2,     3,     4, 50256],
+        [    6, 50256,  -100,  -100,  -100],
+        [    8,     9, 50256,  -100,  -100]])
+"""
+```
+
+修正したcollate関数は期待とおりに機能しており、トークンID -100を挿入してターゲットリストを書き換えています。この調整の背後にはどのようなロジックがあるのでしょうか。
+
+PyTorchの交差エントロピー誤差関数のデフォルト設定はcross_entropy(..., ignore_index=-100)です。つまり、ターゲットが-100でラベル付けられている場合、それらは無視されます。そこで、各バッチの訓練サンプルを同じ長さに揃えるために追加したeot（パディング）トークンを無視するために、このignore_indexを利用したのです。一方で、ターゲットにeotトークンID（50256）を1つ残しておくのは、eotトークンの生成をLLMが学習するのに役立つからです。これにより、応答が完了したことを示す目印としてeotトークンを利用できるようになります。
+
+パディングトークンをマスクすることに加えて、指示に対応するターゲットトークンIDをマスクするのも一般的です。LLMの指示に対応するターゲットトークンIDをマスクすると、生成された応答のターゲットIDでのみ交差エントロピー誤差が計算されるようになります。それにより、LLMが（指示を記憶するのではなく）正確な応答を生成することに重点を置いて訓練されるようになるため、過剰適合を抑制するのに役立ちます。
+
+しかし、インストラクションチューニングの過程で指示をマスクすることが普遍的に有利であるかどうかについて研究者の意見は分かれています。
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
