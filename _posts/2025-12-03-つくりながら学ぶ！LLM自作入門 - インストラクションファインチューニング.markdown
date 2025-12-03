@@ -1,0 +1,530 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― インストラクションファインチューニング（第2部）"
+date:   2025-12-03 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**インストラクションファインチューニング編、その第2部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+## 指示データセット用のデータローダー作成
+
+InstructionDatasetとcustom_collate_fn()の両方をPyTorchのデータローダーに統合するだけで作業の成果を味わうことができます。これらのデータローダーは、LLMのインストラクションチューニングプロセス用のデータを自動的にシュッフルし、バッチをまとめてくれます。
+
+これまでは、ターゲットデバイス（device="cuda"の場合はGPUメモリ）へのデータ転送をメインの訓練ループで行ってきました。このデバイス転送プロセスをcollate関数の一部にすると、このプロセスが訓練ループの外でバックグラウンドプロセスとして実行されるようになるため、モデルの訓練中にGPUがブロックされるのを阻止できるという利点があります。
+
+```python
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# if torch.backends.mps.is_available():
+#    device = torch.device("mps")
+print("Device:", device)
+```
+
+次に、custom_collate_fn()で選択したデバイス設定は、この関数をPyTorchのDataLoaderクラスに統合するときに再利用します。そこで、Pythonの標準ライブラリfunctoolsのpartial()関数を使って、device引数が事前設定された新しいバージョンの関数を作成します。さらに、allowed_max_lengthを1024に設定して、GPT-2モデルがサポートしているコンテキストの最大の長さでデータを切り詰めます。
+
+```python
+from functools import partial
+
+customized_collate_fn = partial(
+    custom_collate_fn,
+    device=device,
+    allowed_max_length=1024
+)
+```
+
+次に、以前と同じようにデータローダーをセットアップしますが、今回はバッチ構築プロセスにカスタムcollate関数を使います。
+
+```python
+from torch.utils.data import DataLoader
+
+
+num_workers = 0
+batch_size = 8
+
+torch.manual_seed(123)
+
+train_dataset = InstructionDataset(train_data, tokenizer)
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=batch_size,
+    collate_fn=customized_collate_fn,
+    shuffle=True,
+    drop_last=True,
+    num_workers=num_workers
+)
+
+val_dataset = InstructionDataset(val_data, tokenizer)
+val_loader = DataLoader(
+    val_dataset,
+    batch_size=batch_size,
+    collate_fn=customized_collate_fn,
+    shuffle=False,
+    drop_last=False,
+    num_workers=num_workers
+)
+
+test_dataset = InstructionDataset(test_data, tokenizer)
+test_loader = DataLoader(
+    test_dataset,
+    batch_size=batch_size,
+    collate_fn=customized_collate_fn,
+    shuffle=False,
+    drop_last=False,
+    num_workers=num_workers
+)
+```
+
+train_loaderが生成する入力バッチとターゲットバッチのサイズを調べてみましょう。
+
+```python
+print("Train loader:")
+for inputs, targets in train_loader:
+    print(inputs.shape, targets.shape)
+
+"""
+Train loader:
+torch.Size([8, 61]) torch.Size([8, 61])
+torch.Size([8, 76]) torch.Size([8, 76])
+torch.Size([8, 73]) torch.Size([8, 73])
+torch.Size([8, 68]) torch.Size([8, 68])
+...
+"""
+```
+
+ここで、8はバッチサイズ、61はこのバッチに含まれている各訓練サンプルのトークン数です。2の目の入力バッチとターゲットバッチでは、トークン数（76）が異なっています。データローダーがさまざまな長さのバッチを作成できるのは、カスタムcollate関数のおかげです。
+
+## 事前学習済みのLLMを読み込む
+
+インストラクションチューニングに取りかかるまえに、ファインチューニングしたい事前学習済みのGPTモデルを読み込む必要があります。
+
+```python
+from gpt_download import download_and_load_gpt2
+from previous_chapters import GPTModel, load_weights_into_gpt
+
+BASE_CONFIG = {
+    "vocab_size": 50257,     # 語彙のサイズ
+    "context_length": 1024,  # コンテキストの長さ
+    "drop_rate": 0.0,        # ドロップアウト率
+    "qkv_bias": True         # クエリ、キー、値の計算にバイアスを使うかどうか
+}
+
+model_configs = {
+    "gpt2-small (124M)": {"emb_dim": 768, "n_layers": 12, "n_heads": 12},
+    "gpt2-medium (355M)": {"emb_dim": 1024, "n_layers": 24, "n_heads": 16},
+    "gpt2-large (774M)": {"emb_dim": 1280, "n_layers": 36, "n_heads": 20},
+    "gpt2-xl (1558M)": {"emb_dim": 1600, "n_layers": 48, "n_heads": 25},
+}
+
+CHOOSE_MODEL = "gpt2-medium (355M)"
+
+BASE_CONFIG.update(model_configs[CHOOSE_MODEL])
+
+model_size = CHOOSE_MODEL.split(" ")[-1].lstrip("(").rstrip(")")
+settings, params = download_and_load_gpt2(
+    model_size=model_size,
+    models_dir="gpt2"
+)
+
+model = GPTModel(BASE_CONFIG)
+load_weights_into_gpt(model, params)
+model.eval()
+```
+
+ここで、事前学習済みのLLMの性能を評価するために、検証データセットのタスクの1つで、LLMの応答を期待される応答と比較してみましょう。これにより、ファインチューニングを行う前の、ダウンロードしたばかりのモデルが、指示追従タスクでどれくらい性能を発揮するのかを理解するためのベースラインが得られます。このベースラインは、後ほどファインチューニングの効果を正しく評価するのに役立ちます。まず、サンプルデータを読み込みます。
+
+```python
+torch.manual_seed(123)
+
+input_text = format_input(val_data[0])
+print(input_text)
+
+"""
+Below is an instruction that describes a task. Write a response that appropriately completes the request.
+
+### Instruction:
+Convert the active sentence to passive: 'The chef cooks the meal every day
+"""
+```
+
+次に、モデルの事前学習に使ったのと同じgenerate()関数を使って、モデルの応答を生成します。
+
+```python
+from previous_chapters import (
+    generate,
+    text_to_token_ids,
+    token_ids_to_text
+)
+
+token_ids = generate(
+    model=model,
+    idx=text_to_token_ids(input_text, tokenizer),
+    max_new_tokens=35,
+    context_size=BASE_CONFIG["context_length"],
+    eos_id=50256,
+)
+generated_text = token_ids_to_text(token_ids, tokenizer)
+```
+
+generate()関数は入力と出力を結合したテキストを返します。しかし、特定のタスクでのモデルの性能を評価する際には、モデルが生成した応答そのものに注目したい場合がよくあります。
+
+```python
+response_text = (
+    generated_text[len(input_text):]
+    .replace("### Response:", "")
+    .strip()
+)
+print(response_text)
+
+"""
+The chef cooks the meal every day.
+
+### Instruction:
+
+Convert the active sentence to passive: 'The chef cooks the
+"""
+```
+
+事前学習済みのモデルは、まだ与えられた指示に正確に従うことができないようです。モデルがこのような要求を理解して適切に応答できるようにするには、ファインチューニングが必要です。
+
+## 指示データでのLLMのファインチューニング
+
+今回は事前学習済みのモデルを、指示データセットを使ってさらに訓練します。
+
+```python
+from previous_chapters import (
+    calc_loss_loader,
+    train_model_simple
+)
+
+model.to(device)
+
+torch.manual_seed(123)
+
+with torch.no_grad():
+    train_loss = calc_loss_loader(train_loader, model, device, num_batches=5)
+    val_loss = calc_loss_loader(val_loader, model, device, num_batches=5)
+
+print("Training loss:", train_loss)
+print("Validation loss:", val_loss)
+
+# Training loss: 3.8259105682373047
+# Validation loss: 3.7619349479675295
+```
+
+モデルとデータローダーの準備ができたところで、モデルの訓練に進むことにします。訓練プロセスをセットアップするコードを実装します。このプロセスは、オプティマイザの初期化、エポック数の設定、そして評価の頻度と開始コンテキストの適宜で構成されています。訓練中のLLMが生成した応答は、前で確認した検証データセットの最初の指示サンプル（val_data[0]）に基づいて評価されます。
+
+```python
+import time
+
+start_time = time.time()
+
+torch.manual_seed(123)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.00005, weight_decay=0.1)
+
+num_epochs = 2
+
+train_losses, val_losses, tokens_seen = train_model_simple(
+    model, train_loader, val_loader, optimizer, device,
+    num_epochs=num_epochs, eval_freq=5, eval_iter=5,
+    start_context=format_input(val_data[0]), tokenizer=tokenizer
+)
+
+end_time = time.time()
+execution_time_minutes = (end_time - start_time) / 60
+print(f"Training completed in {execution_time_minutes:.2f} minutes.")
+```
+
+さらに、各エポックの最後に生成された応答をもとに、検証データセットのサンプルで指定されたタスクをモデルがどれくらい正確に実行できているかを確認することもできます。
+
+```python
+from previous_chapters import plot_losses
+
+epochs_tensor = torch.linspace(0, num_epochs, len(train_losses))
+plot_losses(epochs_tensor, tokens_seen, train_losses, val_losses)
+```
+
+## 応答の抽出と保存
+
+LLMの性能を評価するには、応答を抽出し、モデルを保存する必要があります。応答抽出ステップでは、generate()関数を使います。
+
+```python
+torch.manual_seed(123)
+
+
+for entry in test_data[:3]:
+
+    input_text = format_input(entry)
+
+    token_ids = generate(
+        model=model,
+        idx=text_to_token_ids(input_text, tokenizer).to(device),
+        max_new_tokens=256,
+        context_size=BASE_CONFIG["context_length"],
+        eos_id=50256
+    )
+    generated_text = token_ids_to_text(token_ids, tokenizer)
+    response_text = (
+        generated_text[len(input_text):]
+        .replace("### Response:", "")
+        .strip()
+)
+
+    print(input_text)
+    print(f"\nCorrect response:\n>> {entry['output']}")
+    print(f"\nModel response:\n>> {response_text.strip()}")
+    print("-------------------------------------")
+```
+
+重要なのは、モデル評価が補完ファインチューニングの場合ほど単純ではないことです。補完ファインチューニングでは、単に正しいスパム/非スパムクラスラベルの役割を計算して分類の正解率を求めます。実際には、インストラクションチューニングされたLLM（チャットボットなど）は、複数のアプローチで評価されます。
+
+- MMLUなどの短答択一式のベンチマーク。MMLUはモデルの全般的な知識を評価する。
+- LMSYS Chatbot Arenaなど、人間の投票による評価を通じた他のLLMとの比較。
+- AlpacaEvalなど、GPT-4のような別のLLMを応答の評価に使う自動会話型ベンチマーク
+
+実際には、多肢選択問題への回答、人間による評価、会話の性能を計測する自動的な評価基準という3種類の評価手法をすべて考慮すると、さらに効果を期待できます。ただし、今回は単に多肢選択式の質問に答える能力ではなく、会話の性能を評価することが主な目的であるため、人間による評価と自動的な評価基準のほうが適切かもしれません。
+
+LLMの会話の性能とは、コンテキスト、ニュアンス、意図を理解することで、人間らしいコミュニケーションをとる能力のことです。これには、一貫性のある適切な応答を提供する、一貫性を維持する、異なるトピックや会話スタイルに適用するなどのスキルが含まれます。
+
+そこで、今回取り組んでいるタスクの規模を考慮して、別のLLMを使って応答を自動的に評価する自動会話型ベンチマークと同様のアプローチを実装することにします。この方法では、人的な負担をそれほどかけずに、生成された応答の品質を効率よく評価できます。
+
+ここで評価する応答を準備するために、モデルが生成した応答をtest_dataディクショナリに追加し、更新されたデータをinstruction-data-with-response.jsonファイルとして保存します。
+
+```python
+from tqdm import tqdm
+
+for i, entry in tqdm(enumerate(test_data), total=len(test_data)):
+
+    input_text = format_input(entry)
+
+    token_ids = generate(
+        model=model,
+        idx=text_to_token_ids(input_text, tokenizer).to(device),
+        max_new_tokens=256,
+        context_size=BASE_CONFIG["context_length"],
+        eos_id=50256
+    )
+    generated_text = token_ids_to_text(token_ids, tokenizer)
+    response_text = generated_text[len(input_text):].replace("### Response:", "").strip()
+
+    test_data[i]["model_response"] = response_text
+
+
+with open("instruction-data-with-response.json", "w") as file:
+    json.dump(test_data, file, indent=4)  # きれいに出力するためのインデント
+```
+
+最後に、このモデルを将来のプロジェクトで再利用できるように、gpt2-medium355m-sft.pthファイルとして保存します。
+
+```python
+import re
+
+
+file_name = f"{re.sub(r'[ ()]', '', CHOOSE_MODEL) }-sft.pth"
+torch.save(model.state_dict(), file_name)
+print(f"Model saved as {file_name}")
+
+# 書きを使って読み込み可能
+# model.load_state_dict(torch.load("gpt2-medium355M-sft.pth"))
+```
+
+## ファインチューニングしたLLMの評価
+
+次は、ファインチューニングされたLLMの応答を、別の大規模なLLMを使って自動的に評価する方法を実装します。その結果をもとにモデルの性能を定量化する手法を実装します。
+
+テストデータセットでの応答を自動的に評価するために、ここではMeta AIによって開発された80億ぱらめーたのLlama 3モデルを利用します。このモデルはすでにインストラクションチューニングされており、オープンソースのOllamaアプリケーションを使ってローカルで実行できます。
+
+Ollamaは、LLMをラップトップ上で効率的に実行するためのアプリケーションであり、オープンソースのllama.cppライブラリのラッパーです。llama.cppは、効率を最大化するためにLLMを純粋なC/C++で実装しています。
+
+まず、Ollamaアプリケーションまたはollama serveを別のターミナルで実行している状態で、コマンドラインで次のコマンドを実行します。
+
+```python
+ollama run llama3
+```
+
+次のコードは、Ollamaを使ってテストデータセットでの応答を評価する前に、Ollamaセッションが正常に実行されていることを確認します。
+
+```python
+import psutil
+
+def check_if_running(process_name):
+    running = False
+    for proc in psutil.process_iter(["name"]):
+        if process_name in proc.info["name"]:
+            running = True
+            break
+    return running
+
+ollama_running = check_if_running("ollama")
+
+if not ollama_running:
+    raise RuntimeError("Ollama not running. Launch ollama before proceeding.")
+print("Ollama running:", check_if_running("ollama"))
+```
+
+すでにPythonセッションを閉じている場合、または残りのコードを別のPythonセッションで実行したい場合は、次のコードを使います。
+
+```python
+import json
+from tqdm import tqdm
+
+file_path = "instruction-data-with-response.json"
+
+with open(file_path, "r") as file:
+    test_data = json.load(file)
+
+
+def format_input(entry):
+    instruction_text = (
+        f"Below is an instruction that describes a task. "
+        f"Write a response that appropriately completes the request."
+        f"\n\n### Instruction:\n{entry['instruction']}"
+    )
+
+    input_text = f"\n\n### Input:\n{entry['input']}" if entry["input"] else ""
+
+    return instruction_text + input_text
+```
+
+ollama runコマンドの代わりに、PythonとREST APIを使ってモデルと対話することができます。
+
+```python
+import requests
+
+def query_model(
+    prompt,
+    model="llama3",
+    url="http://localhost:11434/api/chat"
+):
+    # データペイロードをディクショナリとして作成
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "options": {     # 応答を決定論的にするための設定
+            "seed": 123,
+            "temperature": 0,
+            "num_ctx": 2048
+        }
+    }
+
+    
+    """
+    # ディクショナリをJSONフォーマットの文字列に変化し、バイト列にエンコード
+    payload = json.dumps(data).encode("utf-8")
+
+    # リクエストオブジェクトを作成し、メソッドをPOSTに設定し、必要なヘッドを追加
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST"
+    )
+    request.add_header("Content-Type", "application/json")
+
+    # リクエストを送信し、レスポンスをキャプチャ
+    response_data = ""
+    with urllib.request.urlopen(request) as response:
+        while True:
+            line = response.readline().decode("utf-8")
+            if not line:
+                break
+            response_json = json.loads(line)
+            response_data += response_json["message"]["content"]
+
+    return response_data
+    """
+    with requests.post(url, json=data, stream=True, timeout=30) as r:
+        r.raise_for_status()
+        response_data = ""
+        for line in r.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            response_json = json.loads(line)
+            if "message" in response_json:
+                response_data += response_json["message"]["content"]
+
+    return response_data
+
+
+model = "llama3"
+# query_model()関数の使い方
+result = query_model("What do Llamas eat?", model)
+print(result)
+```
+
+query_model()関数を使うと、ファインチューニング済みのモデルによって生成された応答を評価できます。
+
+```python
+for entry in test_data[:3]:
+    prompt = (
+        f"Given the input `{format_input(entry)}` "
+        f"and correct output `{entry['output']}`, "
+        f"score the model response `{entry['model_response']}`"
+        f" on a scale from 0 to 100, where 100 is the best score. "
+    )
+    print("\nDataset response:")
+    print(">>", entry['output'])
+    print("\nModel response:")
+    print(">>", entry["model_response"])
+    print("\nScore:")
+    print(">>", query_model(prompt))
+    print("\n-------------------------")
+```
+
+平均スコアは、モデルの性能をより簡潔かつ定量的に評価する手段となります。次のgenerate_model_scores()関数は、変更された指示をプロンプトとして使います。
+
+```python
+def generate_model_scores(json_data, json_key, model="llama3"):
+    scores = []
+    for entry in tqdm(json_data, desc="Scoring entries"):
+        prompt = (
+            f"Given the input `{format_input(entry)}` "
+            f"and correct output `{entry['output']}`, "
+            f"score the model response `{entry[json_key]}`"
+            f" on a scale from 0 to 100, where 100 is the best score. "
+            f"Respond with the integer number only."
+        )
+        score = query_model(prompt, model)
+        try:
+            scores.append(int(score))
+        except ValueError:
+            print(f"Could not convert score: {score}")
+            continue
+
+    return scores
+
+
+scores = generate_model_scores(test_data, "model_response")
+print(f"Number of scores: {len(scores)} of {len(test_data)}")
+print(f"Average score: {sum(scores)/len(scores):.2f}\n")
+```
+
+平均スコアは、他のモデルと比較したり、モデルの性能を向上させるためにさまざまな訓練設定を試してみたりするための有効なベンチマークとなります。モデルの性能をさらに向上させるために、次に示すようなさまざまな戦略を検討してみることもできます。
+
+- ファインチューニング中に学習率、バッチサイズ、エポック数といったハイパーパラメータを調整する。
+- 訓練データセットのサイズを大きくするか、より幅広いトピックやスタイルをカバーするためにサンプルを多様化する。
+- モデルの応答をより効率的に導くために、プロンプトや指示の形式を変えてみる。
+- より大規模な事前学習済みモデルを使う。そうしたモデルは、複雑なパターンを捉える能力が高く、より正確な応答を生成できる可能性がある。
+
+## まとめ
+
+インストラクションチューニングの後に、必要に応じて実行できる選好チューニング（preference fine-tuning）という追加のステップがあります。選好チューニングは、特定のユーザーの好みにモデルを適合させるのに特に役立ちます。
+
+最新の進歩に追いつくための1つの方法は、arXivで最新の研究論文を調べることです。また、サブレディットr/LocalLLaMAは、コミュニティとつながり、最新のツールやトレンドに関する情報を入手するのにもってこいです。
+
+- インストラクションチューニングは、事前学習済みのLLMを人間の指示に従わせ、望ましい応答を生成させるプロセスです。
+- データセットの準備には、指示応答データセットのダウンロード、エントリのフォーマット、訓練データセット、検証データセット、テストデータセットへの分割が含まれます。
+- 訓練バッチはカスタムcollate関数を使って構築します。この関数は、シーケンスをパディングし、ターゲットトークンIDを作成し、パディングトークンをマスクします。
+- インストラクションチューニングの出発点として、事前学習済みの3億5,500万パラメータのGPT-2 mediumモデルを読み込みます。
+- 事前学習済みのモデルは、事前学習と同じような訓練ループを使って、指示データセットでファインチューニングされます。
+- インストラクションチューニングしたモデルの評価では、モデルのテストデータセットの応答を抽出し、（たとえば、別のLLMを使って）採点します。
+- Ollamaアプリケーションと80億パラメータのLlamaモデルを使って、ファインチューニングしたモデルのテストデータセットでの応答を自動的に評価し、性能を定量化するために平均スコアを求めることができます。
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
