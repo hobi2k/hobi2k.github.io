@@ -1,0 +1,200 @@
+---
+layout: post
+title:  "つくりながら学ぶ！LLM自作入門 ― LoRAファインチューニング"
+date:   2025-12-04 00:10:22 +0900
+categories: LLM自作入門
+---
+
+
+
+本日は**『つくりながら学ぶ！LLM自作入門』**インストラクションファインチューニング編、その第2部です。
+
+個人的な記録用なので、内容は非常に圧縮された形で記載されます。
+
+LoRA（Low-Rank Adaptation）は、パラメータ効率のよいファインチューニングに広く使われているテクニックの1つです。このでは、LoRAというトピックに触れてみます。
+
+## LoRA
+
+LoRAは、事前学習済みのモデルを特定の（多くの場合は）より小さなデータセットに適合させるために、モデルの重みパラメータのほんの一部だけを調整するというテクニックです。名前の「Low-Rank」部分は、モデルの調整を重みパラメータ空間全体の小さい次元の部分空間に限定するという数学的概念を表します。これにより、訓練中の重みパラメータの最も影響力のある変化の方向をうまく捉えることができます。LoRAが効果的で、人気を集めている理由は、タスク固有のデータで大規模なモデルを効率的にファインチューニングできるため、計算コストや計算リソースを本来よりぼ大幅に削減できる点にあります。
+
+大規模な重み行列Wが特定の層に関連付けられているとしましょう。LoRAはLLMのすべての線形層に適用できますが、ここでは具体的な例として1つの層に注目します。
+
+ディープニューラルネットワークを訓練するときには、逆伝播中に△Wを学習します。この行列には、訓練中に損失関数を最小化するには元の重みパラメータをどの程度更新すべきかに関する情報が含まれています。ここからは、モデルの重みパラメータを単に「重み」と呼ぶことにします。通常の訓練とファインチューニングでは、重みの更新は次のように定義されます。
+
+- W<sub>updated</sub> = W + △W
+
+Huらによって提案されたLoRAは、重み更新行列△Wを直接計算するのではなく、その近似を学習することで、この計算をより効率的に行う手段を提供します。
+
+- △W = AB
+
+ここで、AとBはWよりもはるかに小さい2つの行列であり、ABはAとBの行列積を表しています。
+
+LoRAを使うと、ここで定義した重みの更新式を次のように再定義できます。
+
+- W<sub>updated</sub> = W + AB
+
+LoRAは、2つの小さな行列AとBを使って△Wを近似します。この場合、積ABはWに加算されます。rは調整可能なハイパーパラメータであり、内部次元を表します。
+
+通常のファインチューニングとLoRAの数式には少し違いがあります。この違いは行列積の分配法則によるもので、元の重みと更新された重みを一体化して1つの行列として扱うのではなく、分離して別々に扱うことができます。たとえば、xを入力データとする通常のファインチューニングの場合は、この計算を次のように表現できます。
+
+- x(W + △W) = xW + x△W
+
+同様に、LoRAについても次のように記述できます。
+
+- x(W + AB) = xW + xAB
+
+実践では、LoRAはさらに効果的です。訓練中に更新する重みの数が減るだけではなく、LoRAの重み行列を基のモデルの重みから切り離しておくこともできるからです。つまり、事前学習されたモデルの重みは変更せずにそのまま保存し、訓練後にモデルを使うときに、LoRAの重み行列を動的に適用することができます。
+
+LoRAの重み行列を切り離しておくことが実践において非常に便利なのは、LLMの完全なバージョンをいくつも格納しておかなくても、モデルのカスタマイズが可能になるからです。LLMを特定の顧客やアプリケーション向けにカスタマイズする際には、LoRAの小さな行列を調整するだけでよいため、ストレージ要件が削減され、スケーラビリティが向上します。LoRAファインチューニングには、もちろんデータセットの準備とモデルの初期化が必要です。しかし、ここではそのプロセスを省略してファインチューニングにのみ取り組みます。
+
+## LoRAによるパラメータ効率のよいファインチューニング
+
+まず、行列A、Bを作成するLoRA層を初期化します。この層は、スケーリング係数alphaとrank(r)も設定します。
+
+LoRAの行列A、Bを層の入力に適用し、モデルの出力を計算します。これらの行列の内部次元rは、AとBのサイズを変化させることで、訓練可能なパラメータの数を調整する設定として機能します。
+
+```python
+import math
+
+class LoRALayer(torch.nn.Module):
+    def __init__(self, in_dim, out_dim, rank, alpha):
+        super().__init__()
+        self.A = torch.nn.Parameter(torch.empty(in_dim, rank))
+        torch.nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))  # PyTorchのLinear層で使われる初期化と同じ
+        self.B = torch.nn.Parameter(torch.zeros(rank, out_dim))
+        self.alpha = alpha
+        self.rank = rank
+
+    def forward(self, x):
+        x = (self.alpha / self.rank) * (x @ self.A @ self.B)
+        return x
+```
+
+rankは行列A、Bの内部次元を制御します。要するに、LoRAによって導入されるパラメータの数を決定することで、モデルの適応性と、パラメータの数に基づくモデルの効率性とのバランスを維持します。
+
+もう1つの重要な設定であるalphaは、LoRA層からの出力のスケーリング係数として機能します。この係数は主に、適応された層の出力が元の層に与える影響の度合いを決定します。つまり、LoRAが元の層の出力に与える影響を調整する手段と見なすことができます。
+
+LoRAの一般的な目標は、既存のLinear層を置き換えることで、重みの更新を事前学習済みの重みに直接適用できるようにすることです。元のLinear層の重みを統合するために、今度はLinearWithLoRA層を作成します。この層は、前に実装したLoRALayerを活用し、ニューラルネットワーク内の既存のLinear層（GPTModelのSelf-Attentionモジュールやフィードフォワードモジュールなど）を置き換えます。
+
+```python
+class LinearWithLoRA(torch.nn.Module):
+    def __init__(self, linear, rank, alpha):
+        super().__init__()
+        self.linear = linear
+        self.lora = LoRALayer(
+            linear.in_features, linear.out_features, rank, alpha
+        )
+
+    def forward(self, x):
+        return self.linear(x) + self.lora(x)
+```
+
+このコードは、標準のLinear層とLoRALayer層を組み合わせたものです。forward()メソッドは、元のLinear層とLoRALayer層の結果を加算することで、出力を計算します。
+
+重み行列B（LoRALayerではself.B）はゼロ値で初期化されるため、行列A、Bの積はゼロ行列になります。ゼロを足しても重みは変化しないため、元の重みを変化させることはありません。
+
+次に、以前に定義したGPTModelクラスにLoRAを適用するために、replace_linear_with_lora()関数を導入します。この関数は、このモデルに存在するすべてのLinear層を、新たに作成したLinearWithLoRA層に置き換えます。
+
+```python
+def replace_linear_with_lora(model, rank, alpha):
+    for name, module in model.named_children():
+        if isinstance(module, torch.nn.Linear):
+            # Linear層をLinearWithLoRA層に置き換える
+            setattr(model, name, LinearWithLoRA(module, rank, alpha))
+        else:
+            # 同じ関数を子モジュールに再帰的に適用
+            replace_linear_with_lora(module, rank, alpha)
+```
+
+これで、GPTModelのLinear層を新たに作成したLinearWithLoRA層に置き換えて、パラメータ効率のよいファインチューニングを行うために必要なコードがすべて揃いました。次に、GPTModelのMulti-head Attention、フィードフォワードモジュール、出力層に含まれているLinear層をすべてLinearWithLoRA層にアップグレードします。
+
+Linear層をLinearWithLoRA層にアップグレードする前に、元のモデルのパラメータを凍結します。
+
+```python
+total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Total trainable parameters before: {total_params:,}")
+
+for param in model.parameters():
+    param.requires_grad = False
+
+total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Total trainable parameters after: {total_params:,}")
+
+# Total trainable parameters before: 124,441,346
+# Total trainable parameters after: 0
+```
+
+次に、replace_linear_with_lora()を使ってLinear層を置き換えます。
+
+```python
+replace_linear_with_lora(model, rank=16, alpha=16)
+
+total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Total trainable LoRA parameters: {total_params:,}")
+
+# Total trainable LoRA parameters: 2,666,528
+```
+
+LoRAを適用した結果、訓練可能なパラメータの数が約50分の1に減少したことがわかります。rankとalphaの妥当なデフォルト値は16ですが、rankの値を増やすのも一般的であり、その場合は訓練可能なパラメータの数が増加します。alphaについては、通常はrankの半分、2倍、または同じ値に設定します。
+
+```python
+model.to(device)
+
+print(model)
+```
+
+このモデルには、新しいLinearWithLoRA層が含まれています。LinearWithLoRA層は、訓練不可能に設定された元のLinear層と、ファインチューニングの対象となる新しいLoRALayer層で構成されています。
+
+それでは、ファインチューニングに進みましょう。
+
+```python
+import time
+from previous_chapters import train_classifier_simple
+
+start_time = time.time()
+
+torch.manual_seed(123)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=8e-4, weight_decay=0.1)
+
+num_epochs = 5
+train_losses, val_losses, train_accs, val_accs, examples_seen = train_classifier_simple(
+    model, train_loader, val_loader, optimizer, device,
+    num_epochs=num_epochs, eval_freq=50, eval_iter=5,
+)
+
+end_time = time.time()
+execution_time_minutes = (end_time - start_time) / 60
+print(f"Training completed in {execution_time_minutes:.2f} minutes.")
+```
+
+LoRAを使ったモデルの訓練には、LoRAを使わないモデルの訓練よりも時間がかかりますが、これはLoRA層によってフォワードパスの間に追加の計算が導入されるためです。しかし、逆伝播のコストがもっと高くなるような大規模なモデルでは、通常のLoRAをつかったほうがモデルの訓練が加速化されます。
+
+損失を可視化してみましょう。
+
+```python
+from previous_chapters import plot_values
+
+epochs_tensor = torch.linspace(0, num_epochs, len(train_losses))
+examples_seen_tensor = torch.linspace(0, examples_seen, len(train_losses))
+
+plot_values(epochs_tensor, examples_seen_tensor, train_losses, val_losses, label="loss")
+```
+
+次は正解率の計算です。
+
+```python
+train_accuracy = calc_accuracy_loader(train_loader, model, device)
+val_accuracy = calc_accuracy_loader(val_loader, model, device)
+test_accuracy = calc_accuracy_loader(test_loader, model, device)
+
+print(f"Training accuracy: {train_accuracy*100:.2f}%")
+print(f"Validation accuracy: {val_accuracy*100:.2f}%")
+print(f"Test accuracy: {test_accuracy*100:.2f}%")
+```
+
+全体的には、比較的少数のモデルの重み（元の1億2,400万個の重みではなく、わずか270万個のLoRAの重み）だけをファインチューニングしたことを考えれば、結果は印象的です
+
+
+**参考文献**  
+Sebastian Raschka. 『つくりながら学ぶ！LLM自作入門』（Build a Large Language Model (From Scratch)）. 株式会社クイープ訳、東京: マイナビ出版, 2025.
