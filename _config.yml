@@ -25,6 +25,8 @@ plainwhite:
       url: /category/LoRAMap/
     - title: Huggingface_Audio
       url: /category/Huggingface_Audio/
+    - title: Huggingface_smol
+      url: /category/Huggingface_smol/
     - title: About
       url: /about/
   name: Ahn Hosung
