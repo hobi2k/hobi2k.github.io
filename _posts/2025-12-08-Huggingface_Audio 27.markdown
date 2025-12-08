@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "허깅페이스 오디오 트랜스포머 코스 - SpeechT5 한국어 TTS 프로젝트 2"
-date:   2025-12-02 00:10:22 +0900
+date:   2025-12-08 00:10:22 +0900
 categories: Huggingface_Audio
 ---
 

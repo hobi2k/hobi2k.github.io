@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "허깅페이스 오디오 트랜스포머 코스 - Speech-to-Speech Translation (STST) 정리"
-date:   2025-12-02 00:10:22 +0900
+date:   2025-12-08 00:10:22 +0900
 categories: Huggingface_Audio
 ---
 
