@@ -1,0 +1,320 @@
+---
+layout: post
+title:  "[DL Project] X-Ray 폐렴 이미지 분류"
+date:   2025-11-18 10:43:22 +0900
+categories: DeepLearning
+---
+
+# X-Ray 폐렴 이미지 분류
+
+본 프로젝트는 흉부 X-Ray 이미지를 Normal vs Pneumonia 두 클래스로 분류하기 위한 전이학습 기반 이미지 분류 모델을 구축하는 실험입니다.
+단순 ResNet18 뿐 아니라 **Vision Transformer(ViT)**까지 비교하여 성능을 평가합니다.
+
+## 개요
+
+### 사용 데이터
+
+데이터는 Kaggle의 Chest X-Ray Pneumonia 데이터셋입니다.
+
+
+| 데이터셋    | 설명         |
+| ------- | ---------- |
+| `train` | 모델 학습용 이미지 |
+| `val`   | 검증용 이미지    |
+| `test`  | 최종 평가용 이미지 |
+
+
+### 프로젝트 설계
+
+
+| 태스크        | 기술                                                      |
+| ---------- | ------------------------------------------------------- |
+| 데이터 전처리    | Resize / Normalize / Augmentation                       |
+| 모델 구성      | ResNet18 (partial fine-tuning) / ViT (full fine-tuning) |
+| 성능 평가      | Accuracy / Precision / Recall / F1-score                |
+| 클래스 불균형 처리 | class weight 적용                                         |
+
+
+## 데이터 로드 및 전처리
+
+Kaggle 데이터 다운로드
+
+```python
+import kagglehub
+data_path = kagglehub.dataset_download("paultimothymooney/chest-xray-pneumonia")
+```
+
+디렉토리 구조 출력 함수
+
+```python
+def path_printer(path: str, prefix=""):
+    path = Path(path)
+    for dir in path.iterdir():
+        if dir.is_dir():
+            print(prefix + dir.name)
+            path_printer(dir, prefix + "  ")
+```
+
+### 이미지 샘플 시각화
+
+```python
+def imagination(path: Path):
+    dirs = sorted([p for p in path.iterdir() if p.is_dir()])
+    x_dir, y_dir = dirs
+    ...
+```
+
+출력 예시
+
+- 왼쪽: Normal
+- 오른쪽: Pneumonia
+
+### Transform 구성
+
+훈련용 transform(augmentation 포함)
+
+```python
+train_transformer = v2.Compose([
+    v2.Resize((256, 256)),
+    v2.CenterCrop((224, 224)),
+    v2.RandomHorizontalFlip(),
+    v2.ToImage(),
+    v2.ToDtype(torch.float32, scale=True),
+    v2.Normalize(mean=[0.485, 0.456, 0.406],
+                 std=[0.229, 0.224, 0.225]),
+])
+```
+
+검증/테스트 transform
+
+```python
+test_transformer = v2.Compose([
+    v2.Resize((256, 256)),
+    v2.CenterCrop((224, 224)),
+    v2.ToImage(),
+    v2.ToDtype(torch.float32, scale=True),
+    v2.Normalize(mean=[0.485, 0.456, 0.406],
+                 std=[0.229, 0.224, 0.225]),
+])
+```
+
+## 데이터셋 구성
+
+PyTorch ImageFolder를 활용하여 자동 라벨링
+
+```python
+train_dataset = ImageFolder(train_path, transform=train_transformer)
+val_dataset = ImageFolder(val_path, transform=test_transformer)
+test_dataset = ImageFolder(test_path, transform=test_transformer)
+```
+
+## DataLoader 생성
+
+```python
+train_dataloader = DataLoader(train_dataset, 16, shuffle=True, num_workers=2, drop_last=True)
+val_dataloader = DataLoader(val_dataset, 16, shuffle=False, num_workers=2, drop_last=True)
+test_dataloader = DataLoader(test_dataset, shuffle=False, num_workers=2, drop_last=False)
+```
+
+## 모델링
+
+### ResNet18 전이학습 기반 모델
+
+사전학습된 ResNet18 로드
+
+```python
+def my_resnet(num_classes=2):
+    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+
+    # layer4, fc만 학습 가능하도록 설정
+    for name, param in model.named_parameters():
+        if "layer4" in name or "fc" in name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
+    return model
+```
+
+클래스 불균형 처리
+
+```python
+weights = compute_class_weight(
+    class_weight='balanced',
+    classes=np.array([0,1]),
+    y=train_dataset.targets
+)
+weights = torch.tensor(weights, dtype=torch.float32).to(device)
+```
+
+Loss & Optimizer
+
+```python
+loss_fn = nn.CrossEntropyLoss(weight=weights)
+optimizer = optim.Adam([p for p in my_model.parameters() if p.requires_grad], lr=1e-5)
+```
+
+## 훈련 및 검증 루프 클래스
+
+훈련/검증/테스트 기능을 하나의 클래스로 통합
+
+```python
+class train_or_test:
+    def __init__(self, model, optim, loss_fn, epochs=20, save_file="my_model", device=None, **dataloader):
+        ...
+```
+
+주요 기능
+
+- Early Stopping (patience=10)
+- Train -> Validate -> Save best model
+- Inference에서 Confusion Matrix 출력
+
+### ResNet18 훈련
+
+```python
+executer = train_or_test(my_model, optimizer, loss_fn, epochs=20,
+                         save_file="resmodel", device=device,
+                         train_loader=train_dataloader,
+                         val_loader=val_dataloader,
+                         test_loader=test_dataloader)
+
+executer.training_loop()
+my_model.load_state_dict(torch.load("resmodel.pth"))
+executer.inference()
+```
+
+### ResNet18 결과
+
+Confusion Matrix
+
+
+| 항목 | 수   |
+| -- | --- |
+| TN | 146 |
+| FN | 1   |
+| TP | 389 |
+| FP | 88  |
+
+
+성능 지표
+
+
+| Metric    | Score |
+| --------- | ----- |
+| Accuracy  | 85.7% |
+| Precision | 81.5% |
+| Recall    | 99.7% |
+| F1-score  | 89.6% |
+
+
+## Vision Transformer(ViT) 실험
+
+### 모델 로드
+
+```python
+from transformers import ViTForImageClassification
+
+vit_model = ViTForImageClassification.from_pretrained(
+    "google/vit-base-patch16-224",
+    num_labels=2,
+    ignore_mismatched_sizes=True
+).to(device)
+```
+
+ViT는 전체 파라미터 fine-tuning을 권장하므로
+
+```python
+for p in vit_model.parameters():
+    p.requires_grad = True
+```
+
+Optimizer
+
+```python
+optimizer_vit = optim.Adam(vit_model.parameters(), lr=1e-5)
+```
+
+훈련
+
+```python
+executer_vit = train_or_test(vit_model, optimizer_vit, loss_fn,
+                             epochs=20, save_file="vitmodel",
+                             device=device,
+                             train_loader=train_dataloader,
+                             val_loader=val_dataloader,
+                             test_loader=test_dataloader)
+
+executer_vit.training_loop()
+executer_vit.inference()
+```
+
+### ViT 결과
+Confusion Matrix
+
+
+| 항목 | 수   |
+| -- | --- |
+| TN | 148 |
+| FN | 2   |
+| TP | 388 |
+| FP | 86  |
+
+
+성능 지표
+
+
+| Metric    | Score |
+| --------- | ----- |
+| Accuracy  | 85.9% |
+| Precision | 81.8% |
+| Recall    | 99.5% |
+| F1-score  | 89.8% |
+
+
+## 분류 시각화
+
+테스트 데이터에서 이미지 + 예측 라벨을 보여주는 함수
+
+```python
+classification_visualization(vit_model, test_dataloader, device, class_names)
+```
+
+시각화 결과 예시
+
+- 초록색 제목: 예측 = 정답
+- 빨간색 제목: 오분류
+
+## 결론 및 회고
+
+### 모델 비교
+
+
+| 모델       | Accuracy | F1-score | 특징                         |
+| -------- | -------- | -------- | -------------------------- |
+| ResNet18 | 85.7%    | 89.6     | 빠르고 안정적                    |
+| ViT      | 85.9%    | 89.8     | 약간 더 높은 F1-score, 더 깊은 표현력 |
+
+
+주요 관찰
+
+1. Recall이 매우 높다(>99%)
+
+Pneumonia 이미지 대부분을 정확히 탐지함
+
+2. Precision이 상대적으로 낮다(≈81%)
+
+False Positive가 많은 경향
+
+3. 의료 영상 분류에서는 False Negative 최소화가 더 중요
+
+해당 실험에서는 FN이 거의 없어 좋은 결과
+
+## 개선 아이디어
+
+- 더 강력한 augmentation (RandomRotation, ColorJitter 등)
+- Data balancing (oversampling, mixup)
+- EfficientNet, ConvNeXt 등 최신 CNN 사용
+- ViT-Large/Huge 계열 비교
+- Heatmap 기반 Grad-CAM 시각화 추가

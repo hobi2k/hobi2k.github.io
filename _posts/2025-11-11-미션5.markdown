@@ -1,0 +1,258 @@
+---
+layout: post
+title:  "[DL Project] 오토인코더 기반 손상된 문서 이미지 복원"
+date:   2025-11-11 10:43:22 +0900
+categories: DeepLearning
+---
+
+# 오토인코더 기반 손상된 문서 이미지 복원
+
+본 포스트는 제가 수행한 미션 기반 실습 내용을 정리한 것입니다.
+
+## 프로젝트 개요
+
+본 프로젝트는 Kaggle의 Denoising Dirty Documents 데이터셋을 활용하여
+손상된 문서를 오토인코더(autoencoder) 모델로 복원하는 실험입니다.
+
+
+| 이름              | 설명               |
+| --------------- | ---------------- |
+| `train`         | 손상된 문서 이미지       |
+| `train_cleaned` | 문서의 정상(clean) 버전 |
+| `test`          | 손상된 문서 테스트 이미지   |
+
+주요 목적
+
+1. 이미지 전처리 및 정규화
+2. PyTorch 기반 오토인코더 모델 구현
+3. SSIM 기반 학습 및 Early Stopping
+4. RMSE / PSNR / SSIM 성능 평가
+5. 결과 시각화
+
+## 데이터 로드 및 전처리
+
+데이터는 cv2와 PIL로 로드하고, 흑백 변환 + 리사이징 + 정규화를 적용했습니다.
+
+### 이미지 로드 함수
+
+```python
+def image_loading(file_path: Path) -> list:
+    images = []
+    for p in file_path.iterdir():
+        if p.suffix.lower() in ('.jpg', '.png', '.jpeg'):
+            p = cv2.imread(p)
+            p = cv2.cvtColor(p, cv2.COLOR_BGR2RGB)
+            images.append(p)
+    return images
+```
+
+훈련용 X / Y / Test 이미지를 각각 로드합니다.
+
+```python
+train_x_dir = Path("/content/drive/MyDrive/codeit/denoising-dirty-documents/train")
+train_y_dir = Path("/content/drive/MyDrive/codeit/denoising-dirty-documents/train_cleaned")
+test_dir = Path("/content/drive/MyDrive/codeit/denoising-dirty-documents/test")
+
+train_images = image_loading(train_x_dir)
+label_images = image_loading(train_y_dir)
+test_images = image_loading(test_dir)
+```
+
+## 커스텀 Dataset 구조
+
+PyTorch Dataset 클래스를 직접 구현하여
+이미지를 PIL -> Tensor -> Normalize 흐름으로 변환합니다.
+
+### Train Dataset
+
+```python
+class Train_DataSetting(Dataset):
+    def __init__(self, x_data_path: Path, y_label_path: Path, transform=None):
+        self.transform = transform
+        self.train_data = sorted([(x_data_path / p) for p in x_data_path.iterdir() if p.suffix.lower() in ('.jpg', '.png', '.jpeg')])
+        self.label_data = sorted([(y_label_path / p) for p in y_label_path.iterdir() if p.suffix.lower() in ('.jpg', '.png', 'jpeg')])
+        assert len(self.train_data) == len(self.label_data)
+
+    def __getitem__(self, idx):
+        train_img = Image.open(self.train_data[idx]).convert('RGB')
+        label_img = Image.open(self.label_data[idx]).convert('RGB')
+        if self.transform:
+            train_img = self.transform(train_img)
+            label_img = self.transform(label_img)
+        return train_img, label_img
+```
+
+### Test Dataset
+
+```python
+class Test_DataSetting(Dataset):
+    def __init__(self, test_path: Path, transform=None):
+        self.transform = transform
+        self.test_data = sorted([(test_path / p) for p in test_path.iterdir() if p.suffix.lower() in ('.jpg', '.png', '.jpeg')])
+
+    def __getitem__(self, idx):
+        test_img = Image.open(self.test_data[idx]).convert('RGB')
+        return self.transform(test_img) if self.transform else test_img
+```
+
+## 이미지 변환(Transform)
+
+- 흑백 변환
+- (420, 540) 리사이징
+- [-1, 1] 정규화
+
+```python
+def custom_transform():
+    return v2.Compose([
+        v2.ToImage(),
+        v2.Grayscale(num_output_channels=1),
+        v2.Resize((420, 540)),
+        v2.ToDtype(dtype=torch.float32, scale=True),
+        v2.Normalize(mean=[0.5], std=[0.5])
+    ])
+```
+
+## 커스텀 DataLoader
+
+여러 데이터셋 클래스를 유연하게 받을 수 있도록 범용 DataLoader 클래스를 구현했습니다.
+
+```python
+class DataLoader_v1:
+    def __init__(self, *path_object: Path, dataset_class: Dataset, batch_size=32, transform=None, shuffle=True, num_workers=0):
+        ...
+```
+
+훈련, 검증 split:
+
+```python
+full_loader = DataLoader_v1(train_x_dir, train_y_dir, dataset_class=Train_DataSetting, transform=transformer)
+
+total_size = len(full_loader.dataset)
+train_size = int(total_size * 0.8)
+val_size = total_size - train_size
+
+train_set, val_set = random_split(full_loader.dataset, [train_size, val_size])
+train_loader = DataLoader(train_set, batch_size=14, shuffle=True)
+val_loader = DataLoader(val_set, batch_size=14, shuffle=False)
+```
+
+## 오토인코더 모델 설계
+
+### Encoder 구조
+
+- Conv -> BatchNorm -> ReLU
+- 스트라이드 2로 다운샘플링
+
+### Decoder 구조
+
+- ConvTranspose로 업샘플링
+- 마지막 Activation은 Tanh
+- 출력은 다시 bilinear 보간하여 (420, 540) 고정
+
+```python
+class MyAutoEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(1, 32, 3, 2, 1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, 2, 1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, 3, 2, 1),
+            nn.ReLU()
+        )
+
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, 4, 2, 1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, 4, 2, 1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 1, 4, 2, 1),
+            nn.Tanh()
+        )
+
+    def forward(self, img):
+        encoded = self.encoder(img)
+        decoded = self.decoder(encoded)
+        resized_img = F.interpolate(decoded, size=(420, 540), mode='bilinear', align_corners=False)
+        return resized_img
+```
+
+## 학습 구성
+
+- 손실 함수: 1 − SSIM
+
+```python
+loss_fn = pytorch_msssim.SSIM(data_range=2.0, size_average=True, channel=1)
+loss = 1 - ssim_val
+```
+
+- Optimizer
+
+```python
+optimizer = optim.Adam(model.parameters(), lr=0.0005)
+```
+
+- Early Stopping
+
+3 epoch 연속으로 개선이 없으면 종료합니다.
+
+## 평가 지표
+
+모델 출력 범위를 [-1,1]에서 [0,1]로 변환 후 평가합니다.
+
+- RMSE
+- PSNR
+- SSIM
+
+평가 함수
+
+```python
+def evaluate_batch_autoencoder(y_pred, y):
+    y_pred_01 = (y_pred + 1) / 2
+    y_01 = (y + 1) / 2
+    ...
+    return {"RMSE": mean_rmse, "PSNR": mean_psnr, "SSIM": mean_ssim}
+```
+
+## 결과 시각화
+
+### 훈련 데이터 예시
+
+학습 데이터의 손상 이미지와 정답 라벨 비교를 시각화:
+
+```python
+visualizing_dataloader(train_loader)
+```
+
+### 예측 시각화
+
+```python
+visualize_images_and_outputs(images, outputs)
+```
+
+결과 예시는 다음과 같이 표시됩니다.
+
+- 좌측: 원본 손상 이미지
+- 우측: 오토인코더 복원 이미지
+
+## 결론 및 회고
+
+본 프로젝트는 다음의 학습 목표를 만족했습니다.
+
+- PyTorch 기반 커스텀 데이터 파이프라인 제작
+- Conv -> ConvTranspose를 이용한 전형적 오토인코더 구조 학습
+- SSIM 기반 손실 함수 적용
+- 복원 모델의 RMSE/PSNR/SSIM 정량 평가
+- 모델 출력 이미지의 질적 분석
+
+추가로 개선해볼 수 있는 점
+
+- U-Net 구조로 성능 향상 가능
+- Skip-connection을 추가하여 디테일 복원 강화
+- 다양한 augmentation 적용
+- adversarial loss 도입하여 image denoising 강화

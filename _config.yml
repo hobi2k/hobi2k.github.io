@@ -23,6 +23,8 @@ plainwhite:
       url: /category/Healtheat_Vision/
     - title: LLM自作入門
       url: /category/LLM自作入門/
+    - title: Qwen2.5
+      url: /category/Qwen2.5/
     - title: LoRAMap
       url: /category/LoRAMap/
     - title: Huggingface_Audio

@@ -1,0 +1,323 @@
+---
+layout: post
+title:  "[DL Project] SSD 기반 개, 고양이 얼굴 객체 탐지"
+date:   2025-11-24 10:43:22 +0900
+categories: DeepLearning
+---
+
+# SSD 기반 개, 고양이 얼굴 객체 탐지
+
+## 프로젝트 개요
+
+사용 데이터
+
+- Oxford-IIIT Pet Dataset (Kaggle Mirror)
+
+
+| 경로                    | 설명                       |
+| --------------------- | ------------------------ |
+| `images/`             | 모든 원본 이미지                |
+| `annotations/xmls/`   | VOC 포맷의 bounding-box XML |
+| `annotations/trimaps` | segmentation용 마스크        |
+| `trainval.txt`        | 학습 + 검증 이미지 목록           |
+| `test.txt`            | 테스트 이미지 목록               |
+
+
+주요 목표
+
+
+| 태스크     | 기술                             |
+| ------- | ------------------------------ |
+| 데이터 전처리 | XML 파싱, 이미지 로딩, bbox scaling   |
+| 모델 구현   | SSD300(VGG16 기반) - torchvision |
+| 성능 평가   | IoU, VOC mAP(11-point)         |
+| 추론/시각화  | 예측 bounding-box 그리기            |
+
+
+## 데이터 준비
+
+KaggleHub로 데이터 다운로드
+
+```python
+import kagglehub
+data_path = kagglehub.dataset_download("zippyz/cats-and-dogs-breeds-classification-oxford-dataset")
+```
+
+구조 출력
+
+```python
+def path_printer(path, prefix=""):
+    path = Path(path)
+    for dir in path.iterdir():
+        if dir.is_dir():
+            print(prefix + dir.name)
+            ...
+```
+
+## 설정(Config)
+
+```python
+class Config:
+    ROOT = Path(data_path)
+    IMG_PATH = ROOT / "images" / "images"
+    ANO_PATH = ROOT / "annotations" / "annotations" / "xmls"
+    SSD_SIZE = 300
+    BATCH_SIZE = 16
+    NUM_WORKERS = 4
+    TRAIN_SPLIT = 0.8
+    SEED = 123
+    CLASSES = ["__background__", "cat", "dog"]
+    NUM_CLASSES = len(CLASSES)
+    LR = 1e-4
+    EPOCHS = 15
+    CONF_THR = 0.1
+    IOU_THR = 0.5
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+```
+
+## XML 어노테이션 파싱
+
+SSD는 객체 탐지이므로 XML로부터 **bbox(xmin,ymin,xmax,ymax)**와 라벨(cat=1, dog=2) 을 추출합니다.
+
+```python
+def xml_parser(xml_path: Path):
+    tree = ET.parse(str(xml_path))
+    root = tree.getroot()
+
+    labels, boxes = [], []
+    for obj in root.findall("object"):
+        name = obj.find("name").text.lower()
+        label = 1 if name=="cat" else 2
+
+        b = obj.find("bndbox")
+        xmin = float(b.find("xmin").text)
+        ymin = float(b.find("ymin").text)
+        xmax = float(b.find("xmax").text)
+        ymax = float(b.find("ymax").text)
+
+        boxes.append([xmin,ymin,xmax,ymax])
+        labels.append(label)
+
+    return np.array(boxes, np.float32), np.array(labels, np.int64)
+```
+
+## Dataset 정의
+
+### 학습, 검증 Dataset: PetDataset
+
+핵심 기능
+
+- XML, 이미지 파일명을 stem 기준 완전 매칭
+- transform 후 bbox 좌표를 리사이즈 비율로 직접 보정
+- SSD 입력 형식에 맞도록 {boxes, labels} 딕셔너리 반환
+
+```python
+class PetDataset(Dataset):
+    def __init__(...):
+        self.valid_set = set(file_list["Image"])
+        img_dict = {p.stem:p for p in img_path.glob("*.jpg") if p.stem in self.valid_set}
+
+        for xml_file in xml_path.glob("*.xml"):
+            if xml_file.stem not in img_dict: continue
+            boxes, labels = xml_parser(xml_file)
+            self.cached_ann[xml_file.stem] = (boxes, labels)
+            self.pairs.append((xml_file, img_dict[xml_file.stem]))
+
+    def __getitem__(self, idx):
+        xml_file, img_file = self.pairs[idx]
+        boxes, labels = self.cached_ann[xml_file.stem]
+
+        img = cv2.imread(str(img_file))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        h0, w0 = img.shape[:2]
+
+        img = self.transform(img)
+        _, H, W = img.shape
+
+        # bbox scaling
+        boxes[:,[0,2]] *= W / w0
+        boxes[:,[1,3]] *= H / h0
+
+        return img, {"boxes": torch.tensor(boxes), "labels": torch.tensor(labels)}
+```
+
+### 추론 Dataset: TestDataset
+
+어노테이션 없이 이미지와 이름(stem)만 반환.
+
+## 커스텀 collate_fn
+
+SSD는 하나의 batch에서 이미지 크기가 동일해도 bbox 수가 다르기 때문에 텐서 스택이 불가합니다.
+따라서 리스트 형태로 batch 구성
+
+```python
+def collate_fn(batch):
+    images = [b[0] for b in batch]
+    targets = [b[1] for b in batch]
+    return images, targets
+```
+
+## 데이터 분리 및 DataLoader 구성
+
+```python
+split = int(Config.TRAIN_SPLIT * len(trainval_df))
+train_df = trainval_df.iloc[:split]
+val_df = trainval_df.iloc[split:]
+
+train_ds = PetDataset(... train_df ...)
+val_ds = PetDataset(... val_df ...)
+test_ds = TestDataset(...)
+
+train_loader = DataLoader(train_ds, batch_size=16, shuffle=True, collate_fn=collate_fn)
+val_loader   = DataLoader(val_ds,   batch_size=16, shuffle=False, collate_fn=collate_fn)
+```
+
+## 시각화 함수
+
+```python
+def visualize(img, boxes, labels):
+    img = img.permute(1,2,0).numpy().copy()
+    img = (img - img.min())/(img.max()-img.min())
+    for b,l in zip(boxes, labels):
+        cv2.rectangle(img, ...)
+        cv2.putText(img, class_names[l], ...)
+    plt.imshow(img)
+```
+
+## SSD 모델 구성
+
+```python
+from torchvision.models.detection import ssd300_vgg16, SSD300_VGG16_Weights
+
+ssd_model = ssd300_vgg16(weights=SSD300_VGG16_Weights.DEFAULT).to(Config.DEVICE)
+ssd_model.head.classification_head.num_classes = Config.NUM_CLASSES
+```
+
+Optimizer
+
+```python
+optimizer = optim.SGD(ssd_model.parameters(), lr=1e-4, momentum=0.9, weight_decay=5e-4)
+```
+
+## SSD 학습 함수
+
+SSD는 내부에서 loss dict(loc_loss, conf_loss)를 리턴하므로 sum으로 총 loss 계산
+
+```python
+def train_one_epoch_ssd(model, dataloader, optimizer, epoch):
+    model.train()
+    for images, targets in dataloader:
+        images = [img.to(device) for img in images]
+        targets = [{k:v.to(device) for k,v in t.items()} for t in targets]
+
+        optimizer.zero_grad()
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+        losses.backward()
+        optimizer.step()
+```
+
+## IOU 평가 함수
+
+각 이미지별로 예측 박스와 GT 박스 IOU 계산
+
+```python
+ious = box_iou(pred_boxes, gt_boxes)
+max_iou, _ = ious.max(dim=1)
+```
+
+평균 IoU 출력.
+
+## VOC mAP(11-point) 계산
+
+핵심 로직
+
+- 클래스별 GT, 예측 박스 모아 저장
+- 예측을 score 기준 내림차순 정렬
+- TP/FP 누적
+- recall–precision 곡선 생성
+- VOC 2007 방식의 11-point AP 계산
+
+```python
+def compute_ap(recall, precision):
+    ap = 0.0
+    for t in np.linspace(0,1,11):
+        p = np.max(precision[recall >= t]) if np.sum(recall>=t)>0 else 0
+        ap += p
+    return ap / 11
+```
+
+## SSD 학습 실행
+
+```python
+for epoch in range(1, Config.EPOCHS+1):
+    train_loss = train_one_epoch_ssd(ssd_model, train_loader, optimizer, epoch)
+    val_iou = evaluate_ssd_iou(ssd_model, val_loader)
+    print(...)
+```
+
+최종 모델 저장
+
+```python
+torch.save(ssd_model.state_dict(), "ssd_final.pth")
+```
+
+## 결과
+
+1. 학습 로그 예시
+
+- Epoch 15 기준
+- Average Loss: 0.4636
+- IoU: 0.8455
+
+2. mAP 결과
+
+evaluate_ssd_map()을 통해 클래스별 AP 및 mAP 출력
+
+- Cat AP
+- Dog AP
+- mAP ≈ 0.82 ~ 0.87 범위 (실행 환경마다 차이)
+
+## SSD 추론 및 시각화
+
+```python
+def visualize_prediction(img_tensor, boxes, labels, scores=None):
+    ...
+```
+
+테스트셋 일부 샘플 예측
+
+```python
+ssd_predict_testset(ssd_model, test_ds, n=8)
+```
+
+출력 예시
+
+- 예측 bounding box
+- 클래스(cat/dog)
+- confidence score
+
+## 결론 및 회고
+
+전체 파이프라인 정리
+
+1. VOC XML 파싱 -> bbox/label 추출
+2. transform 후 bbox scaling 적용
+3. SSD300(VGG16) 모델 fine-tuning
+4. IoU + VOC mAP 평가
+5. 랜덤 테스트셋 추론 및 시각화
+
+성능 요약
+
+1. IoU ≈ 0.84
+2. mAP ≈ 0.82~0.87
+3. SSD300 기준 준수한 성능
+
+개선 가능성
+
+- Data augmentation 추가 (RandomCrop, ColorJitter, HorizontalFlip 등)
+- Faster R-CNN/RetinaNet/YOLO 계열과 비교
+- FPN 기반 detector 적용
+- mixup, mosaic augmentation 탐색
+- 학습률 스케줄러 추가
+- Multi-scale training

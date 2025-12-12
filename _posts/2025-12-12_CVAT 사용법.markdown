@@ -1,0 +1,539 @@
+---
+layout: post
+title:  "Healtheat 이미지 인식 프로젝트 - CVAT 사용법"
+date:   2025-12-10 00:10:22 +0900
+categories: Healtheat_Vsion
+---
+
+# CVAT 사용법
+
+이 글은 팀원들에게 어노테이션 및 클래수 수정 방법을 공유하기 위해 내가 조사한 CVAT 사용법을 정리한 것이다.
+
+- 목적: YOLO 자동라벨(per-image COCO) -> CVAT 검수/수정 -> Export -> 원래 COCO ID / YOLO ID 사양 복원(Kaggle 제출)
+- 핵심 결론:
+    - Normalize(라벨 문자열 정규화)는 0번 단계다. (NBSP \xa0 때문에 import가 계속 실패하는 핵심 원인)
+    - CVAT는 Task 라벨(name)과 COCO categories.name이 1글자라도 다르면 import 실패한다.
+    - CVAT import는 사실상 dataset-level 단일 COCO(= coco_instances.json)가 권장된다.
+
+- 목차
+
+1. Docker 설치
+2. CVAT 설치 (그리고 다양한 문제 해결법)
+3. CVAT용 라벨 생성법 (코드 포함)
+4. CVAT용 COCO 어노테이션 생성법 (코드 포함)
+5. 원래 카테고리 id / YOLO id 변경(제출 사양 복구)
+
+## 전제 폴더 구조(권장)
+
+프로젝트 데이터는 아래처럼 관리한다.
+
+```python
+data/
+  raw_processed/
+    train_images/                  # 원본/전처리 이미지
+    train_annotations/
+      category_mapping.json         # 원본 매핑(라벨명 오염 가능)
+      category_mapping.normalized.json  # 정규화된 매핑(이게 이후 단일 진실)
+  unified_dataset_v2/
+    annotations/                    # per-image COCO (coco_id 기준)
+      *.json
+  cvat_import/
+    annotations/                    # per-image COCO (cvat_id 기준) - 중간 산출물
+    coco_instances.json             # CVAT import용 dataset-level 단일 COCO
+  cvat_export/
+    coco_instances.json 또는 export 파일들
+  restored_dataset/
+    annotations/                    # per-image COCO (coco_id 복원)
+```
+
+## Docker 설치
+
+CVAT은 다수 서비스(PostgreSQL/Redis/ClickHouse/Traefik/CVAT UI/Server 등)를 컨테이너로 띄운다.
+따라서 Docker Engine + Compose(v2) 가 필요하다.
+
+### 설치 방식 선택
+
+- 권장: Docker 공식 APT 저장소로 docker-ce + docker compose plugin 설치
+- 대안: Ubuntu 기본 docker.io 설치
+    - 단, docker compose 명령이 없거나 compose 버전이 꼬여 CVAT compose 파일 파싱 오류가 나기 쉬움
+
+여기서는 Ubuntu에서 설치한다.
+
+### 배포판 패키지 최소 설치
+
+```python
+sudo apt update
+sudo apt install -y docker.io
+sudo usermod -aG docker $USER
+# 적용을 위해 로그아웃/로그인(또는 reboot)
+```
+
+데몬 확인
+
+```python
+sudo systemctl enable --now docker
+sudo systemctl status docker --no-pager
+docker --version
+```
+
+에러: Cannot connect to the Docker daemon ...
+
+- Docker 데몬이 안 떠있거나 권한 문제
+- 해결:
+    - sudo systemctl start docker
+    - 그룹 적용을 위해 로그아웃/재로그인
+    - 급하면 sudo docker ps로 우회 가능
+
+### Docker Compose v2 확인
+
+정상이라면 아래가 동작해야 한다.
+
+```python
+docker compose version
+```
+
+흔한 문제 1. docker: unknown command: docker compose
+
+- docker.io만 설치했거나 compose plugin이 누락된 상태
+- 해결(환경별):
+    - Ubuntu 패키지 기준: docker-compose-plugin이 존재해야 함
+    - 만약 “Unable to locate package docker-compose-plugin”이면:
+        - (권장) Docker 공식 저장소로 전환
+        - (대안) docker-compose(구버전) 사용 가능하나 CVAT 최신 compose와 충돌 가능성이 높음
+
+## CVAT 설치 (그리고 다양한 문제 해결법)
+
+### CVAT 설치 디렉토리 준비
+
+보통 repo를 받거나, cvat/ 폴더에서 compose를 실행한다.
+
+```python
+cd ~/mission/proj-1/healtheat_vision__/cvat
+```
+
+### 실행
+
+```python
+docker compose up -d
+```
+
+정상이라면 컨테이너들이 생성/시작된다.
+
+```python
+docker ps
+```
+
+### 설치/실행 중 자주 터지는 문제들
+
+문제 A. Compose 파일 파싱 오류
+
+- name does not match any of the regexes: '^x-'
+- GF_AUTH_BASIC_ENABLED contains false, which is an invalid type...
+
+원인
+
+- compose 스키마/버전 불일치
+- 구 docker-compose 또는 호환 낮은 compose로 CVAT compose 파일을 해석
+
+해결
+
+- docker compose version 확인 (v2 권장)
+- docker-compose.yml을 임의 수정하지 말고, 정상적인 compose v2로 실행
+
+문제 B. Docker 데몬 연결 불가
+
+- Cannot connect to the Docker daemon at unix:///var/run/docker.sock
+
+원인
+
+- docker daemon 미실행
+- 권한(그룹) 미적용
+
+해결
+
+```python
+sudo systemctl start docker
+sudo usermod -aG docker $USER
+# 로그아웃/로그인 또는 reboot
+```
+
+문제 C. CVAT 초기 계정/로그인 불가
+
+CVAT 배포 구성에 따라 초기 계정이 없을 수 있다.
+이 경우 server 컨테이너에서 슈퍼유저 생성:
+
+```python
+docker exec -it cvat_server bash
+python manage.py createsuperuser
+exit
+```
+
+컨테이너 이름이 cvat_server가 아닐 수도 있으니 docker ps로 확인.
+
+### CVAT 접속
+
+보통 traefik가 포트를 물고 있고, 설정에 따라 다르지만 흔히 아래 중 하나:
+
+- http://localhost:8080
+- http://<server-ip>:8080
+
+## CVAT용 라벨 생성법 (코드 포함)
+
+여기서부터가 “계속 실패하던” 핵심 구간이다.
+
+### CVAT 라벨 import의 절대 규칙
+
+- CVAT Task 생성 시 정의한 Label name이 최상위 권위
+- COCO import 시:
+    - categories[].name이 Task Label과 바이트 단위로 완전히 동일해야 함
+    - 공백/숨은문자(NBSP \xa0)가 끼면 100% 실패
+        - 에러 예: Label '... \xa0' is not registered for this task
+
+따라서 0번 단계: normalize가 무조건 먼저다.
+
+### (0번) 라벨 문자열 정규화 스크립트
+
+목적
+
+- category_mapping.json에 섞인:
+    - NBSP(\xa0)
+    - 연속 공백
+    - 앞/뒤 공백
+    - 줄바꿈 잔재
+
+를 제거하여 “정규화된 단일 진실”을 만든다.
+
+- src/utils/normalize_labels.py
+
+```python
+import json
+import re
+from pathlib import Path
+from src.config import Config
+
+IN_PATH = Config.DATA_DIR / "raw_processed/train_annotations/category_mapping.json"
+OUT_PATH = Config.DATA_DIR / "raw_processed/train_annotations/category_mapping.normalized.json"
+
+def normalize(text: str) -> str:
+    text = text.replace("\xa0", " ")        # NBSP 제거
+    text = re.sub(r"\s+", " ", text)        # 다중 공백 정리
+    return text.strip()                      # 앞/뒤 공백 제거
+
+mapping = json.loads(IN_PATH.read_text(encoding="utf-8"))
+
+for k, v in mapping.items():
+    v["name"] = normalize(v["name"])
+
+OUT_PATH.write_text(
+    json.dumps(mapping, indent=2, ensure_ascii=False),
+    encoding="utf-8",
+)
+
+print(f"[DONE] normalized mapping saved: {OUT_PATH}")
+```
+
+실행
+
+```python
+uv run -m src.utils.normalize_labels
+```
+
+이후 단계에서 원본 category_mapping.json은 사용 금지
+항상 category_mapping.normalized.json을 사용한다.
+
+### CVAT Task 라벨 JSON 생성 (Raw로 붙여넣기)
+
+CVAT UI에서 Task 생성 시, Labels 입력을 수작업으로 하면 실수(공백/오타)가 나기 쉬움.
+따라서 정규화된 mapping 기반으로 Labels JSON을 생성해서 그대로 붙여넣는 방식을 표준으로 둔다.
+
+- src/utils/gen_cvat_labels_json.py
+
+```python
+import json
+from src.config import Config
+
+MAPPING = Config.DATA_DIR / "raw_processed/train_annotations/category_mapping.normalized.json"
+OUT = Config.DATA_DIR / "cvat_import/labels.json"
+
+mapping = json.loads(MAPPING.read_text(encoding="utf-8"))
+
+# name만 뽑아 정렬(권장: coco_id 기준 정렬도 가능)
+items = sorted(mapping.values(), key=lambda x: x["coco_id"])
+labels = [{"name": it["name"], "attributes": []} for it in items]
+
+OUT.parent.mkdir(parents=True, exist_ok=True)
+OUT.write_text(json.dumps(labels, indent=2, ensure_ascii=False), encoding="utf-8")
+
+print(f"[DONE] CVAT labels json: {OUT}")
+```
+
+실행
+
+```python
+uv run -m src.utils.gen_cvat_labels_json
+```
+
+CVAT Task 생성 화면에서 Labels -> Raw 로 전환 후 labels.json 내용을 그대로 붙여넣는다.
+
+## CVAT용 COCO 어노테이션 생성법 (코드 포함)
+
+여기부터는 “형식 변환 파이프라인”이다.
+
+### 데이터 전제: per-image COCO (coco_id 기준)
+
+YOLO(+SAM) 자동라벨 결과가 다음 구조를 갖는다고 가정:
+
+- 이미지당 JSON 1개(per-image)
+- JSON 내부는 COCO-like:
+
+```python
+{
+  "images": [{ "id": 1, "file_name": "...png", "width": 976, "height": 1280 }],
+  "annotations": [{ "id": 1, "image_id": 1, "category_id": 1899, "bbox": [x,y,w,h], ... }],
+  "categories": [{ "id": 1899, "name": "..." }]
+}
+```
+
+### CVAT이 싫어하는 것: sparse category_id
+
+CVAT COCO importer는 category_id가 1899, 27992 같은 큰 값(sparse) 이면 자주 깨진다.
+따라서 CVAT용으로는 cvat_id(1..N 연속) 로 바꿔야 한다.
+
+해결 방법
+
+- cvat_id는 mapping 파일에 저장하지 않고, 스크립트에서 “파생 생성”한다.
+- 파생 규칙은 항상 동일해야 한다 (예: coco_id 오름차순으로 1..N)
+
+### per-image COCO(coco_id) -> per-image COCO(cvat_id) 변환
+
+- src/utils/cvat_coco_gen.py
+
+```python
+"""
+per-image COCO(JSON 여러 개) → CVAT import 친화 per-image COCO
+- category_id: coco_id → cvat_id(1..N)
+- categories: cvat_id 기준으로 재작성
+"""
+
+import json
+from src.config import Config
+
+ANN_DIR = Config.DATA_DIR / "unified_dataset_v2/annotations"
+OUT_DIR = Config.DATA_DIR / "cvat_import/annotations"
+MAPPING = Config.DATA_DIR / "raw_processed/train_annotations/category_mapping.normalized.json"
+
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+mapping = json.loads(MAPPING.read_text(encoding="utf-8"))
+
+# cvat_id 파생 규칙: coco_id 오름차순
+items = sorted(mapping.values(), key=lambda x: x["coco_id"])
+
+cocoid_to_cvat = {}
+cvatid_to_name = {}
+
+for cvat_id, item in enumerate(items, start=1):
+    cocoid_to_cvat[item["coco_id"]] = {"cvat_id": cvat_id, "name": item["name"]}
+    cvatid_to_name[cvat_id] = item["name"]
+
+for json_path in ANN_DIR.glob("*.json"):
+    if json_path.name == "category_mapping.json":
+        continue
+
+    coco = json.loads(json_path.read_text(encoding="utf-8"))
+
+    # annotations 변환
+    for ann in coco.get("annotations", []):
+        coco_id = ann["category_id"]
+        ann["category_id"] = cocoid_to_cvat[coco_id]["cvat_id"]
+
+    # categories 재작성(해당 이미지에 등장한 라벨만)
+    used_cvat_ids = sorted({ann["category_id"] for ann in coco.get("annotations", [])})
+    coco["categories"] = [
+        {"id": cid, "name": cvatid_to_name[cid], "supercategory": "pill"}
+        for cid in used_cvat_ids
+    ]
+
+    out_path = OUT_DIR / json_path.name
+    out_path.write_text(json.dumps(coco, indent=2, ensure_ascii=False), encoding="utf-8")
+
+print("[DONE] per-image CVAT import용 COCO 생성 완료")
+```
+
+실행
+
+```python
+uv run -m src.utils.cvat_coco_gen
+```
+
+### per-image COCO -> dataset-level 단일 COCO 병합 (CVAT import 최종물)
+
+실제 운영에서 가장 안정적인 방식은 Task 단위 단일 COCO(= coco_instances.json)이다.
+
+- src/utils/cvat_merge.py
+
+```python
+"""
+per-image COCO -> CVAT import용 dataset-level 단일 COCO 생성
+- images[].id: 1..N unique 재부여
+- annotations[].image_id: 새 image_id로 강제
+- categories: id 기준 unique merge
+- images/annotations 키 없는 파일은 skip
+"""
+
+import json
+from src.config import Config
+
+ANN_DIR = Config.DATA_DIR / "cvat_import/annotations"
+OUT_FILE = Config.DATA_DIR / "cvat_import/coco_instances.json"
+
+images = []
+annotations = []
+categories = {}
+
+next_img_id = 1
+next_ann_id = 1
+skipped = []
+
+for json_path in sorted(ANN_DIR.glob("*.json")):
+    coco = json.loads(json_path.read_text(encoding="utf-8"))
+
+    if "images" not in coco or "annotations" not in coco or not coco["images"]:
+        skipped.append(json_path.name)
+        continue
+
+    img = coco["images"][0]
+    img["id"] = next_img_id
+    images.append(img)
+
+    for c in coco.get("categories", []):
+        categories[c["id"]] = c
+
+    for ann in coco.get("annotations", []):
+        ann["id"] = next_ann_id
+        ann["image_id"] = next_img_id
+        annotations.append(ann)
+        next_ann_id += 1
+
+    next_img_id += 1
+
+merged = {
+    "images": images,
+    "annotations": annotations,
+    "categories": sorted(categories.values(), key=lambda x: x["id"]),
+}
+
+OUT_FILE.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
+
+print(f"[DONE] CVAT import COCO 생성 완료 → {OUT_FILE}")
+print(f"images: {len(images)}, annotations: {len(annotations)}")
+if skipped:
+    print("[SKIPPED FILES]")
+    for name in skipped:
+        print(" -", name)
+```
+
+실행
+
+```python
+uv run -m src.utils.cvat_merge
+```
+
+### CVAT 작업 순서(중요)
+
+1. Task 생성
+
+- 이미지 업로드
+- Labels는 labels.json(normalized 기반)을 Raw로 붙여넣기
+
+2. Annotations import
+
+- Task -> Actions -> Upload annotations
+- Format: COCO 1.0
+- File: data/cvat_import/coco_instances.json
+
+**에러: Label 'xxx' is not registered for this task**
+
+- 99% 원인
+    - 라벨 문자열이 정규화되지 않음(NBSP 등)
+    - Task Labels와 COCO categories.name 불일치
+
+- 해결
+    - normalize부터 다시
+    - labels.json을 mapping 기반으로 다시 생성
+    - COCO도 normalized mapping 기반으로 다시 생성
+
+## 원래 카테고리 id / YOLO id 변경(제출 사양 복구)
+
+CVAT에서 검수 후 Export한 결과는 보통 cvat_id 기반이므로,
+학습/제출 사양에 맞게 원래 coco_id / yolo_id로 되돌려야 한다.
+
+- cvat_id는 파생값이므로, import 때 쓴 규칙(예: coco_id 정렬로 1..N)을 동일하게 써야 한다.
+
+### CVAT export -> coco_id 복원 (dataset-level 기준)
+
+CVAT export가 dataset-level COCO로 나왔다고 가정하고, category_id를 복원한다.
+
+- src/utils/restore_coco_from_cvat.py
+
+```python
+"""
+CVAT export COCO(cvat_id) -> 원래 COCO(coco_id) 복원
+- import 때 사용한 cvat_id 파생 규칙을 그대로 재현
+"""
+
+import json
+from src.config import Config
+
+IN_COCO = Config.DATA_DIR / "cvat_export/coco_instances.json"
+OUT_COCO = Config.DATA_DIR / "restored_dataset/coco_instances.json"
+MAPPING = Config.DATA_DIR / "raw_processed/train_annotations/category_mapping.normalized.json"
+
+mapping = json.loads(MAPPING.read_text(encoding="utf-8"))
+items = sorted(mapping.values(), key=lambda x: x["coco_id"])
+
+# cvat_id -> coco_id, name
+cvatid_to_coco = {}
+for cvat_id, item in enumerate(items, start=1):
+    cvatid_to_coco[cvat_id] = {"coco_id": item["coco_id"], "name": item["name"]}
+
+coco = json.loads(IN_COCO.read_text(encoding="utf-8"))
+
+# annotations 복원
+for ann in coco.get("annotations", []):
+    ann["category_id"] = cvatid_to_coco[ann["category_id"]]["coco_id"]
+
+# categories 복원 (등장한 coco_id만)
+used_coco_ids = sorted({ann["category_id"] for ann in coco.get("annotations", [])})
+coco["categories"] = [
+    {"id": cid, "name": next(v["name"] for v in cvatid_to_coco.values() if v["coco_id"] == cid), "supercategory": "pill"}
+    for cid in used_coco_ids
+]
+
+OUT_COCO.parent.mkdir(parents=True, exist_ok=True)
+OUT_COCO.write_text(json.dumps(coco, indent=2, ensure_ascii=False), encoding="utf-8")
+
+print(f"[DONE] restored COCO saved: {OUT_COCO}")
+```
+
+## 운영 규칙
+
+1. 정규화된 mapping이 단일 진실
+- category_mapping.normalized.json만 사용
+2. CVAT용 cvat_id는 파생값
+- coco_id 오름차순으로 1..N 부여(정책 고정)
+3. CVAT Labels는 Raw JSON 붙여넣기로 생성
+- 수작업 타이핑 금지
+4. CVAT import는 dataset-level 단일 COCO를 표준으로 사용
+- cvat_import/coco_instances.json
+5. Export 후에는 반드시 사양 복구 단계 수행
+- restore_coco_from_cvat.py
+
+## 부록: “계속 터질 때” 체크리스트
+
+- mapping에 \xa0(NBSP) 섞였는가? -> normalize 했는가?
+- Task Labels가 COCO categories.name과 100% 같은가?
+- file_name이 Task에 업로드된 이미지명과 완전 일치하는가?
+- docker compose version이 가능한가?
+- docker daemon이 떠 있는가? (systemctl status docker)
+- 병합할 때 images/annotations 키 없는 json이 섞이지 않았는가? (merge에서 skip 로그 확인)

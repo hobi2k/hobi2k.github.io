@@ -1,0 +1,405 @@
+---
+layout: post
+title:  "Qwen2.5 아키텍쳐 학습기 1"
+date:   2025-12-10 00:10:22 +0900
+categories: Qwen2.5
+---
+
+# Qwen2.5 토크나이저
+
+역할: Qwen2 모델이 사용할 “문자열-토큰 ID” 변환 규칙을 정의
+
+핵심 요소:
+
+- BPE(Byte Pair Encoding) 모델
+- 특수 토큰(<|endoftext|>) 정의
+- 정규식 기반 pre-tokenization
+- Byte-level 디코더
+- NFC 정규화
+
+## 모듈/상수 부분
+
+```python
+from typing import Optional, Union
+
+from tokenizers import AddedToken, Regex, Tokenizer, decoders, normalizers, pre_tokenizers
+from tokenizers.models import BPE
+
+from ...tokenization_utils_tokenizers import TokenizersBackend
+from ...utils import logging
+```
+
+- tokenizers는 HuggingFace의 빠른 토크나이저 라이브러리(Rust backend)
+- 여기서 가져오는 것들:
+    - Tokenizer: 토크나이저 객체의 핵심 클래스
+    - BPE: BPE 모델 (vocab + merges)
+    - pre_tokenizers: 공백/문자 단위 쪼개기 도구
+    - normalizers: 문자열 정규화 (NFC 등)
+    - decoders: 토큰 → 문자열로 되돌릴 때 사용
+    - Regex: pre_tokenizer에서 쓸 정규식 타입
+    - AddedToken: 특수 토큰을 정의할 때 사용
+- TokenizersBackend:
+    - Hugging Face PreTrainedTokenizerFast 비슷한 베이스 클래스로 생각하면 됨
+    - 내부에 _tokenizer(fast tokenizer 객체)를 붙여서 HF 스타일 API (__call__, encode, batch_encode_plus 등)를 제공하는 역할.
+- logging은 HF 내부 로거.
+
+```python
+logger = logging.get_logger(__name__)
+```
+
+- 이 모듈 전용 로거. 디버깅/경고용.
+
+### 어휘/머지 파일 이름 상수
+
+```python
+VOCAB_FILES_NAMES = {
+    "vocab_file": "vocab.json",
+    "merges_file": "merges.txt",
+    "tokenizer_file": "tokenizer.json",
+}
+```
+
+- 이 토크나이저가 사용하는 파일 이름 규칙을 정의:
+    - vocab_file -> vocab.json
+        - "토큰 문자열" -> 토큰 ID 매핑 딕셔너리
+    - merges_file -> merges.txt
+        - Byte Pair Encoding에서 merge rule(쌍을 합치는 순서)을 저장한 파일
+    - tokenizer_file -> tokenizer.json
+        - 위 두 개를 합친, HuggingFace Tokenizers 포맷의 단일 파일
+
+HF의 from_pretrained()가 이 이름을 보고 해당 파일을 찾는다.
+
+### 입력 길이 제한
+
+```python
+MAX_MODEL_INPUT_SIZES = {"qwen/qwen-tokenizer": 32768}
+```
+
+- "qwen/qwen-tokenizer"라는 이름의 토크나이저에 대해 최대 토큰 길이 32768이라고 명시.
+- 이 값은:
+    - 슬라이딩 윈도우 잘라낼 때 참고되고
+    - 너무 긴 입력이 들어왔을 때 자르는 기준으로 쓰인다.
+
+### pretokenizer Regex
+
+```python
+PRETOKENIZE_REGEX = r"""(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"""
+```
+
+이건 진짜 핵심이자 난해한 부분이라 좀 나눠서 보자.
+
+- 전체적으로 문장을 “어디서 끊을지” 결정하는 정규식이다.
+- pre_tokenizers.Split(Regex(...), behavior="isolated")에서 쓰이므로,
+    - 텍스트를 이 regex 매치 단위로 잘게 조각낸다.
+    - “단어 / 숫자 / 기호 / 공백 / 줄바꿈 / 축약형”을 적당히 분리하는 역할.
+
+부분별 설명
+
+1. (?i:'s|'t|'re|'ve|'m|'ll|'d)
+    - (?i:) -> case-insensitive (대소문자 무시)
+    - 영어 축약형 ('s, 't, 're, 've, 'm, 'll, 'd) 패턴
+    - 예: I'm, we've, he's 같은 걸 잘라서 'm, 've, 's처럼 분리
+
+2. [^\r\n\p{L}\p{N}]?\p{L}+
+    - \p{L}: 모든 Unicode “Letter”(한글, 일본어, 영어, 등)
+    - \p{N}: 모든 숫자
+    - [^\r\n\p{L}\p{N}]? -> 글자/숫자가 아닌 문자가 하나 있을 수도 있고
+    - 뒤에 \p{L}+ -> 글자 여러 개
+    - 예: ,Hello 같은 경우 , + Hello 따로 잡고 싶은 의도
+
+3. \p{N}
+    - 숫자 한 글자 (0~9, 그 외 유니코드 숫자도 포함)
+
+4. ?[^\s\p{L}\p{N}]+[\r\n]*
+    - ? -> 앞에 공백이 0개 또는 1개 있을 수 있음
+    - [^\s\p{L}\p{N}]+ -> 공백/글자/숫자를 제외한 문자들 (기호들: .,?!@#$ 등)
+    - [\r\n]* -> 뒤에 줄바꿈이 붙을 수도 있음
+    - 즉, 기호 뭉치를 하나의 토큰 그룹으로 잡는 패턴
+
+5. \s*[\r\n]+
+    - 줄바꿈 토큰들
+
+6. \s+(?!\S)
+    - 뒤에 non-space(\S)가 오지 않는 공백 -> 문장 끝쪽 공백
+
+7. \s+
+    - 기타 공백들
+
+요약하면:
+
+- “영어 축약형, 일반 단어, 숫자, 기호 묶음, 줄바꿈, 공백”을 각각 독립적인 토큰 단위로 쪼개기 위한 regex.
+
+이 pretokenization이 잘 되어야, BPE가 효율적으로 “자주 등장하는 subword”를 학습할 수 있다.
+
+## Qwen2Tokenizer 클래스 정의
+
+```python
+class Qwen2Tokenizer(TokenizersBackend):
+    vocab_files_names = VOCAB_FILES_NAMES
+    model_input_names = ["input_ids", "attention_mask"]
+    model = BPE
+```
+
+- TokenizersBackend를 상속 -> HF의 PreTrainedTokenizerFast 역할.
+- vocab_files_names:
+    - from_pretrained()에서 어떤 파일들을 받아와야 하는지 알려주는 클래스 속성.
+- model_input_names:
+    - 이 토크나이저가 모델에 넘겨줄 key 이름.
+    - 일반적으로 "input_ids"와 "attention_mask"가 기본.
+- model = BPE:
+    - tokenizers 라이브러리에서 사용할 “모델 타입”을 지정.
+    - 여기서는 BPE 서브워드 모델을 사용.
+
+## __init__: 토크나이저 실제 구성
+
+```python
+    def __init__(
+        self,
+        vocab: Optional[Union[str, dict[str, int]]] = None,
+        merges: Optional[Union[str, list[str]]] = None,
+        vocab_file=None,
+        merges_file=None,
+        unk_token: str = "<|endoftext|>",
+        bos_token=None,
+        eos_token: str = "<|endoftext|>",
+        pad_token: str = "<|endoftext|>",
+        add_prefix_space=None,
+        **kwargs,
+    ):
+```
+
+**인자 의미**
+
+- vocab:
+    - 직접 vocab 딕셔너리를 전달할 때 사용 ({"token": id, ...})
+    - 보통은 None으로 두고 vocab_file에서 읽어온다.
+- merges:
+    - BPE merge 규칙 리스트. (["t h", "th e", ...])
+- vocab_file, merges_file:
+    - 실제 파일 경로. from_pretrained()가 여기에 경로를 넘겨준다.
+- unk_token:
+    - 모르는 토큰을 나타내는 기호.
+    - 여기서는 <|endoftext|>를 unk와 eos, pad로 통합해서 사용 (OpenAI GPT 계열과 비슷한 스타일)
+- bos_token:
+    - 문장 시작 토큰. 여기서는 None. 대부분의 경우 BOS를 따로 쓰지 않고 EOS 토큰만 사용.
+- eos_token, pad_token:
+    - 둘 다 <|endoftext|>로 설정.
+    - 즉 “문장 끝 + 패딩 + unknown” 모두 같은 토큰 ID를 사용 (모델 학습 시 그 전제를 알고 있음)
+- add_prefix_space:
+    - ByteLevel 토크나이저에서, 문장 시작 전에 공백 하나를 강제로 붙일지 여부.
+    - GPT-2 계열에서 자주 쓰는 옵션.
+- **kwargs:
+    - HF 공통 인자 (do_lower_case, bos_token_id 등) 받아 넘기기용.
+
+### add_prefix_space / 초기 vocab 설정
+
+```python
+        self.add_prefix_space = add_prefix_space if add_prefix_space is not None else False
+```
+
+인자가 None이면 기본값 False로.
+
+```python
+        self._vocab = (
+            vocab
+            if vocab is not None
+            else {
+                "<|endoftext|>": 0,
+            }
+        )
+```
+
+- 만약 vocab이 직접 주어지지 않았다면, 기본 vocab을 최소한 한 개(종료 토큰)만 가진 딕셔너리로 시작.
+- 실제로는 super().__init__()에서 vocab_file을 읽어와서 overwrite 된다.
+- 여기서는 “토크나이저 객체를 만들 수 있을 만큼의 최소한의 형태”를 만들어둔 것.
+
+```python
+        self._merges = merges or []
+```
+
+- merges 미제공 시 빈 리스트. 마찬가지로 나중에 파일에서 읽어와 덮어쓴다.
+
+### 내부 Tokenizer(BPE 모델) 생성
+
+```python
+        self._tokenizer = Tokenizer(
+            BPE(
+                vocab=self._vocab,
+                merges=self._merges,
+                dropout=None,
+                unk_token=None,
+                continuing_subword_prefix="",
+                end_of_word_suffix="",
+                fuse_unk=False,
+                byte_fallback=False,
+            )
+        )
+```
+
+- Tokenizer(BPE(...))
+    - Rust backend BPE 모델을 사용한 fast tokenizer를 생성.
+- dropout=None:
+    - BPE merge 과정에 랜덤성 없이 deterministic하게 동작.
+- unk_token=None:
+    - BPE 모델 수준에서는 unk를 별도로 쓰지 않고, HF 상위 레이어에서 unk 처리.
+- continuing_subword_prefix="", end_of_word_suffix="":
+    - GPT-2 같은 스타일의 “앞에 공백이 붙어있는 토큰” 설계와 연계됨.
+    - BERT에서는 ##subword 같이 prefix를 쓰지만, 여기서는 그런 기호 사용 안 함.
+- fuse_unk=False:
+    - unknown 토큰들이 합쳐지는 동작 방지.
+- byte_fallback=False:
+    - vocab에 없는 문자에 대해 byte-level fallback을 쓰지 않음 (대신 <|endoftext|> 또는 unk 처리 전제)
+
+요약:
+
+- “Qwen2 전용 BPE 모델 뼈대”를 만들고, 나중에 실제 vocab/merges 파일로 채워넣는다.
+
+### 디코더/노멀라이저/프리토크나이저 설정
+
+```python
+        self._tokenizer.decoder = decoders.ByteLevel()
+```
+
+- ByteLevel decoder:
+    - 토큰 ID -> 텍스트로 복원할 때, byte-level 규칙에 따라 다시 문자열로 만드는 컴포넌트.
+    - GPT-2 계열처럼 “공백을 포함한 byte 시퀀스”를 정확히 복원할 수 있게 해준다.
+    - 예: ĠHello → " Hello"처럼 공백까지 복구.
+
+```python
+        self._tokenizer.normalizer = normalizers.NFC()
+```
+
+- Unicode NFC 정규화:
+    - 같은 글자라도 Unicode 조합 방식이 다를 수 있음.
+    - 예시:
+        - 가 = 단일 코드 포인트
+        - ㄱ + ㅏ = 분해형
+    - 이런 것들을 정규화(NFC) 해서 일관된 표현으로 맞추고 토큰화.
+    - 특히 한글/일본어/이모지 등에서 중요.
+
+```python
+        self._tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
+            [
+                pre_tokenizers.Split(
+                    Regex(PRETOKENIZE_REGEX),
+                    behavior="isolated",
+                    invert=False,
+                ),
+                pre_tokenizers.ByteLevel(
+                    add_prefix_space=self.add_prefix_space,
+                    use_regex=False,
+                ),
+            ]
+        )
+```
+
+여기가 진짜 핵심이다.
+
+- pre_tokenizers.Sequence([...])
+    - 두 개의 pre-tokenizer를 순차적으로 적용한다.
+
+**Split with Regex**
+
+```python
+pre_tokenizers.Split(
+    Regex(PRETOKENIZE_REGEX),
+    behavior="isolated",
+    invert=False,
+)
+```
+
+- Split:
+    - 지정한 Regex 단위로 문자열을 조각낸다.
+    - behavior="isolated":
+        - 매칭된 부분을 각각 독립 토큰으로 취급
+        - 즉 split하면서 매칭된 substring들을 버리지 않고 유지한다.
+    - invert=False:
+        - “매칭된 부분들을” 토큰으로 삼겠다는 의미 (반대로 쓰면 “매칭 안 된 부분”을 토큰으로 함).
+
+결과적으로:
+
+- PRETOKENIZE_REGEX로 매칭되는 각 substring이 “pre-token”이 된다 (단어, 숫자, 기호, 공백, 줄바꿈 등을 각각 따로 분리)
+
+**ByteLevel pre-tokenizer**
+
+```python
+pre_tokenizers.ByteLevel(
+    add_prefix_space=self.add_prefix_space,
+    use_regex=False,
+)
+```
+
+- ByteLevel pre-tokenizer는:
+    - 공백과 문자들을 byte 단위로 encode하여 BPE 모델에 넘기기 적합한 형태로 가공.
+- add_prefix_space:
+    - 문장 시작에 공백이 없더라도, 내부적으로 공백 하나를 추가할지 여부.
+    - GPT-2 스타일과 호환성 있음.
+- use_regex=False:
+    - 내부 regex 기반 동작을 끄고, 현재 전달된 pre-token들을 그대로 처리.
+
+즉, pre-tokenization 전체 흐름은:
+
+1. PRETOKENIZE_REGEX로 문자열을 쪼갠다.
+2. 각 조각을 ByteLevel로 변환 (공백, 특수문자까지 byte 단위로 정확히 유지).
+3. 최종적으로 이 조각들이 BPE로 쪼개지면서 token id sequence가 된다.
+
+### 부모 클래스 초기화
+
+```python
+        super().__init__(
+            vocab_file=vocab_file,
+            merges_file=merges_file,
+            unk_token=unk_token,
+            bos_token=bos_token,
+            eos_token=eos_token,
+            pad_token=pad_token,
+            add_prefix_space=add_prefix_space,
+            **kwargs,
+        )
+```
+
+- TokenizersBackend (HF 쪽 base class)가 여기서 실제로:
+    - vocab_file, merges_file 경로를 열어서
+    - self._tokenizer 안의 vocab/merges를 채워주고
+    - self.all_special_tokens, self.special_tokens_map 등을 세팅한다.
+- 즉, 위에서 만든 “껍데기 BPE 모델”에 실제 학습된 vocab/merges를 주입하는 단계.
+
+## 특수 토큰 추가
+
+```python
+        self.add_tokens([AddedToken(token, special=True) for token in self.all_special_tokens])
+```
+
+- self.all_special_tokens:
+    - unk_token, bos_token, eos_token, pad_token 등 설정된 특수 토큰 문자열 리스트.
+- AddedToken(token, special=True):
+    - 이 토큰들은:
+        - split/pre-tokenization 단계에서 쪼개지지 않고
+        - 그대로 하나의 토큰으로 유지되도록 보장.
+- self.add_tokens([...]):
+    - 이 특수 토큰들이 vocab에 없으면 추가해준다.
+
+결과적으로:
+
+- <|endoftext|> 같은 토큰이 “절대 잘리지 않고, 항상 하나의 토큰”으로 취급되도록 보장.
+
+## 마지막 행
+
+```python
+__all__ = ["Qwen2Tokenizer"]
+```
+
+- 이 모듈에서 from ... import * 했을 때 외부에 노출할 심볼을 명시.
+- 여기서는 Qwen2Tokenizer만 공개.
+
+## 정리: 이 토크나이저의 성격 한 줄 요약
+
+1. BPE 기반, byte-level compatible, GPT-류 스타일 토크나이저
+2. PRETOKENIZE_REGEX + ByteLevel pre-tokenizer로
+    - 단어, 숫자, 기호, 공백을 정교하게 쪼개고
+    - 그 위에서 BPE subword 병합을 수행
+3. 특수 토큰 <|endoftext|>를
+    - unk, eos, pad 역할까지 맡기는 구조
+4. NFC 정규화로 한글/일본어 포함 모든 Unicode 텍스트를 안정적으로 처리
+5. TokenizersBackend 상속으로
+    - Hugging Face 스타일의 .encode, __call__, .batch_decode API를 그대로 사용 가능
