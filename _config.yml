@@ -25,12 +25,16 @@ plainwhite:
       url: /category/LLM自作入門/
     - title: Qwen2.5
       url: /category/Qwen2.5/
+    - title: Style-Bert-VITS2
+      url: /category/Style-Bert-VITS2/
     - title: LoRAMap
       url: /category/LoRAMap/
     - title: Huggingface_Audio
       url: /category/Huggingface_Audio/
     - title: Huggingface_smol
       url: /category/Huggingface_smol/
+    - title: Huggingface_diffusion
+      url: /category/Huggingface_diffusion/
     - title: About
       url: /about/
   name: Ahn Hosung
