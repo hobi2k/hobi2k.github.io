@@ -2,7 +2,7 @@
 layout: post
 title:  "[DL Project] SSD 기반 개, 고양이 얼굴 객체 탐지"
 date:   2025-11-24 10:43:22 +0900
-categories: DeepLearning
+categories: Deeplearning
 ---
 
 # SSD 기반 개, 고양이 얼굴 객체 탐지

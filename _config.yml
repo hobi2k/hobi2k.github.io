@@ -17,8 +17,8 @@ plainwhite:
       url: /
     - title: ML
       url: /category/ML/
-    - title: DeepLearning
-      url: /category/DeepLearning/
+    - title: Deeplearning
+      url: /category/Deeplearning/
     - title: Healtheat_Vision
       url: /category/Healtheat_Vision/
     - title: LLM自作入門
@@ -51,6 +51,7 @@ plainwhite:
     - post
     - ML
     - DeepLearning
+    - Healtheat_Vision
     - LLM自作入門
     - LoRAMap
     - about

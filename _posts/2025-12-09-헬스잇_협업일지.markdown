@@ -2,7 +2,7 @@
 layout: post
 title:  "Healtheat 이미지 인식 프로젝트 - 협업일지 3"
 date:   2025-12-09 00:10:22 +0900
-categories: Healtheat_Vsion
+categories: Healtheat_Vision
 ---
 
 # 12월 9일 협업일지

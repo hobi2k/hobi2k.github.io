@@ -2,7 +2,7 @@
 layout: post
 title:  "[DL Project] 오토인코더 기반 손상된 문서 이미지 복원"
 date:   2025-11-11 10:43:22 +0900
-categories: DeepLearning
+categories: Deeplearning
 ---
 
 # 오토인코더 기반 손상된 문서 이미지 복원

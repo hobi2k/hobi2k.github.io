@@ -2,7 +2,7 @@
 layout: post
 title:  "[DL Project] X-Ray 폐렴 이미지 분류"
 date:   2025-11-18 10:43:22 +0900
-categories: DeepLearning
+categories: Deeplearning
 ---
 
 # X-Ray 폐렴 이미지 분류
