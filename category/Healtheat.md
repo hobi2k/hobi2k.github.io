@@ -1,8 +1,8 @@
 ---
 
 layout: category
-title: "Healtheat_Vsion"
-category: "Healtheat_Vsion"
-permalink: /category/Healtheat_Vsion/
+title: "Healtheat_Vision"
+category: "Healtheat_Vision"
+permalink: /category/Healtheat_Vision/
 
 ---
