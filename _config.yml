@@ -33,7 +33,9 @@ plainwhite:
       url: /category/Huggingface_Audio/
     - title: Huggingface_smol
       url: /category/Huggingface_smol/
-    - title: Huggingface_diffusion
+    - title: Huggingface_smol
+      url: /category/Huggingface_agent/
+    - title: Huggingface_agent
       url: /category/Huggingface_diffusion/
     - title: About
       url: /about/
