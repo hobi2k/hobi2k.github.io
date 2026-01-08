@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "허깅페이스 에이전트 코스 - Why use smolagents"
-date:   2025-12-30 00:10:22 +0900
+date:   2025-01-07 00:10:22 +0900
 categories: Huggingface_agent
 ---
 
