@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "허깅페이스 에이전트 코스 - Using Tools in LlamaIndex"
+title:  "허깅페이스 에이전트 코스 - Using Agents in LlamaIndex"
 date:   2025-01-08 00:10:22 +0900
 categories: Huggingface_agent
 ---
