@@ -205,8 +205,6 @@ class HubStatsTool(Tool):
 hub_stats_tool = HubStatsTool()
 ```
 
----
-
 ### 3.2 llama-index 기반 Hub Stats 도구
 
 ```python
@@ -238,8 +236,6 @@ def get_hub_stats(author: str) -> str:
 
 hub_stats_tool = FunctionTool.from_defaults(get_hub_stats)
 ```
-
----
 
 ### 3.3 LangChain 기반 Hub Stats 도구
 
@@ -277,8 +273,6 @@ hub_stats_tool = Tool(
 )
 ```
 
----
-
 ## 4. Alfred에게 모든 도구 통합하기
 
 이제 Alfred에게 다음 도구들을 모두 장착한다.
@@ -286,8 +280,6 @@ hub_stats_tool = Tool(
 - 웹 검색 도구
 - 날씨 정보 도구
 - Hugging Face Hub 통계 도구
-
----
 
 ### 4.1 smolagents 기반 통합
 
@@ -307,8 +299,6 @@ response = alfred.run(
 
 print(response)
 ```
-
----
 
 ### 4.2 llama-index 기반 통합
 
@@ -331,8 +321,6 @@ response = await alfred.run(
 
 print(response)
 ```
-
----
 
 ### 4.3 LangGraph 기반 통합 (Agentic RAG)
 
@@ -386,8 +374,6 @@ response = alfred.invoke({"messages": messages})
 print(response["messages"][-1].content)
 ```
 
----
-
 ## 결론
 
 이제 Alfred는 다음을 모두 수행할 수 있다.
@@ -400,20 +386,6 @@ print(response["messages"][-1].content)
 
 > 에이전트는 더 이상 “답변 생성기”가 아니라  
 > **필요한 정보를 스스로 찾아 행동하는 시스템**이다.
-
----
-
-## 다음 과제
-
-- 특정 주제에 대한 뉴스 전용 검색 도구 구현
-- 실제 외부 API(OpenWeatherMap 등) 연동
-- 도구 사용 빈도 및 정책 기반 제어 추가
-
-이제 Alfred는  
-**가장 박식하고 매력적인 갈라의 호스트**가 될 준비를 마쳤다.
-```
-
-
 
 참고자료
 Huggingface, agents course, https://huggingface.co/learn
