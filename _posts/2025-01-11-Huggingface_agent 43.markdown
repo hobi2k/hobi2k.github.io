@@ -1,167 +1,224 @@
 ---
 layout: post
-title:  "허깅페이스 에이전트 코스 - Agents In Games"
+title:  "허깅페이스 에이전트 코스 - AI Agent Observability & Evaluation 실습"
 date:   2025-01-11 00:10:22 +0900
 categories: Huggingface_agent
 ---
 
-# From LLMs to AI Agents
+# AI Agent Observability & Evaluation 실습
 
-이 글에서는 **LLM 기반 캐릭터**와 **Agentic AI(에이전트 기반 AI)**의 본질적인 차이를 정리하고,  
-왜 이것이 게임·시뮬레이션·인터랙티브 시스템에서 중요한 전환점이 되는지를 설명한다.
+이 글에서는 **AI Agent의 내부 동작을 관측(Observability)**하고  
+**성능을 평가(Evaluation)**하는 방법을 실제 코드와 함께 다룬다.
 
-## LLM과 Agentic AI의 차이
+핵심 목표는 다음 두 가지다.
 
-### LLM 기반 캐릭터 (전통적 접근)
+1. 에이전트가 **어떤 내부 단계를 거쳐 답을 생성했는지 추적**
+2. 그 결과가 **비용·지연·정확도 측면에서 적절한지 평가**
 
-LLM을 사용한 NPC는 주로 **대화 품질**을 개선한다.
+이는 단순한 데모를 넘어,  
+**에이전트를 프로덕션 수준으로 끌어올리기 위한 필수 단계**다.
 
-- 질문에 더 자연스럽게 응답
-- 다양한 말투와 표현 가능
-- 몰입감 있는 대화 제공
+## 실습 전제 조건 (Prerequisites)
 
-하지만 본질적으로는 **수동적(reaction-based)**이다.
+이 실습은 다음 내용을 이미 이해하고 있다는 전제 하에 진행된다.
 
-- 플레이어가 말을 걸어야만 반응
-- 스스로 행동을 결정하지 않음
-- 세계 상태를 바꾸지 않음
+- Agents 개념 (계획, 행동, 관찰)
+- smolagents 프레임워크 구조
+  - Agent
+  - Tool
+  - Model
 
-**대화는 풍부해졌지만, NPC는 여전히 정적인 존재**
+즉, *“Agent가 어떻게 동작하는지”* 는 이미 알고 있고,  
+이제는 *“그 동작을 어떻게 관측·평가할 것인가”* 가 핵심이다.
 
-### Agentic AI 기반 캐릭터
+## Step 0. 필수 라이브러리 설치
 
-Agentic AI는 NPC에게 **의사결정 능력과 행동 주도권**을 부여한다.
+실습에는 다음 범주의 라이브러리가 필요하다.
 
-- 상황을 인식
-- 목표를 설정
-- 행동을 계획
-- 결과에 따라 전략을 수정
+- **Agent 실행**: smolagents
+- **관측(telemetry)**: OpenTelemetry 기반 instrumentation
+- **Observability 플랫폼**: Langfuse
+- **UI/실습 보조**: Gradio, datasets
 
-예를 들어 RPG에서 NPC는:
-
-- 도움을 요청하러 이동할 수 있고
-- 플레이어를 피하거나
-- 함정을 설치하거나
-- 플레이어가 없어도 세계 속에서 행동한다
-
-**NPC가 더 이상 “응답기”가 아니라 “행위자(actor)”가 된다**
-
----
-
-## 게임 디자인 관점에서의 변화
-
-이 작은 차이는 게임 구조 전체를 바꾼다.
-
-### 기존 NPC
-- 스크립트 기반
-- 이벤트 트리거 중심
-- 예측 가능
-
-### Agentic NPC
-- 목표 지향적 행동
-- 환경과의 직접 상호작용
-- 비결정적·창발적 플레이
-
-이로 인해 게임은:
-
-- 더 역동적이 되고
-- 반복 플레이 가치가 증가하며
-- 플레이어의 선택에 진짜로 반응하는 세계가 된다
-
----
-
-## Agentic AI가 NPC에 부여하는 핵심 능력
-
-Agentic AI는 NPC에게 다음 3가지를 제공한다.
-
-### 1. Autonomy (자율성)
-- 게임 상태를 바탕으로 스스로 판단
-- 플레이어 입력 없이도 행동
-
-### 2. Adaptability (적응성)
-- 플레이어 행동에 따라 전략 수정
-- 같은 상황에서도 다른 선택 가능
-
-### 3. Persistence (지속성)
-- 과거 상호작용을 기억
-- 이전 경험이 이후 행동에 반영됨
-
-👉 NPC는 이제 **반응형 객체**가 아니라  
-**세계의 일원으로서 행동하는 주체**가 된다.
-
----
-
-## 현실적인 한계: Agent는 아직 느리다
-
-Agentic AI의 가능성에도 불구하고,  
-현재 기술에는 명확한 제약이 존재한다.
-
-### 문제의 핵심: 지연(latency)
-
-- 에이전트는 **생각(thinking)** 과 **행동(acting)** 을 모두 수행해야 함
-- 이 과정에서 많은 토큰과 시간이 소모됨
-
-대표적 사례:
-- *Claude Plays Pokémon*  
-  → 한 턴의 행동을 결정하기 위해 막대한 추론 토큰 사용
-
----
-
-### 실시간 게임과의 충돌
-
-대부분의 실시간 게임은 다음을 요구한다.
-
-- 약 **30 FPS**
-- 즉, **초당 30번 행동 결정**
-
-현재 Agentic LLM 구조로는:
-- 초당 30회 추론 + 행동 → **사실상 불가능**
-
-따라서 다음 장르에는 부적합:
-- Doom
-- Super Mario Bros.
-- 액션·플랫폼 게임
-
----
-
-## Agentic AI에 적합한 장르
-
-반면, **턴제 게임**은 매우 적합하다.
-
-- 턴 간 충분한 사고 시간
-- 전략적 판단 중심
-- 속도보다 의사결정 품질이 중요
-
-대표 예:
-- Pokémon
-- 전략 RPG
-- 시뮬레이션 게임
-
-👉 **Agentic AI는 “빠른 반응”보다 “깊은 판단”이 중요한 영역에서 빛난다**
-
----
-
-## 다음 단계 예고
-
-이제 이론은 충분하다.  
-다음 섹션에서는:
-
-- 직접 **AI Agent를 구현**
-- Pokémon 스타일의 **턴제 전투 에이전트**를 만들고
-- **플레이어가 직접 대결**해본다
-
----
-
-## 한 줄 요약
-
-> **LLM은 말을 잘하는 NPC를 만들고,  
-> Agentic AI는 스스로 살아 움직이는 NPC를 만든다.**
-
-그리고 지금부터는  
-**“대화형 캐릭터”에서 “행동하는 에이전트”로 넘어가는 단계**다.
+```python
+%pip install langfuse 'smolagents[telemetry]' openinference-instrumentation-smolagents datasets 'smolagents[gradio]' gradio --upgrade
 ```
 
+이 단계의 목적은 **“에이전트 실행 + 추적”이 동시에 가능하도록 환경을 구성**하는 것이다.
 
+## Step 1. Agent Instrumentation (관측 장치 달기)
+
+### 1-1. Langfuse 환경 변수 설정
+
+Langfuse는 Observability 데이터를 수집하는 서버다.  
+에이전트가 생성하는 trace/span을 이 서버로 전송하기 위해 API 키를 설정한다.
+
+```python
+os.environ["LANGFUSE_PUBLIC_KEY"] = "pk-..."
+os.environ["LANGFUSE_SECRET_KEY"] = "sk-..."
+os.environ["LANGFUSE_HOST"] = "https://cloud.langfuse.com"
+```
+
+또한 Hugging Face Inference 호출을 위해 HF_TOKEN도 필요하다.
+
+### 1-2. Langfuse 클라이언트 초기화
+
+```python
+langfuse = get_client()
+langfuse.auth_check()
+```
+
+이 단계는 **Observability 파이프라인이 정상 연결되었는지 확인**하는 용도다.
+
+### 1-3. smolagents Instrumentation 활성화
+
+```python
+SmolagentsInstrumentor().instrument()
+```
+
+이 한 줄이 매우 중요하다.
+
+- 이후 실행되는 **모든 smolagent**
+- 내부의 **LLM 호출 / Tool 호출**
+- 실행 시간, 토큰 사용량
+
+전부 자동으로 **Trace / Span**으로 기록된다.
+
+## Step 2. Instrumentation 테스트 (가장 단순한 Agent)
+
+가장 단순한 CodeAgent를 실행해 instrumentation이 잘 동작하는지 확인한다.
+
+```python
+agent.run("1+1=")
+```
+
+이때 Langfuse 대시보드에서 다음이 보이면 성공이다.
+
+- 하나의 Trace
+- 내부에 LLM 호출 Span
+
+이 단계는 **“관측 장비가 제대로 달렸는지” 확인하는 단계**다.
+
+## Step 3. 더 복잡한 Agent 관측하기
+
+이번에는 Tool(DuckDuckGoSearchTool)을 사용하는 Agent를 실행한다.
+
+```python
+agent.run("How many Rubik's Cubes could you fit inside the Notre Dame Cathedral?")
+```
+
+이 경우 Trace 구조는 다음처럼 보인다.
+
+- Root Trace: Agent 실행 전체
+- 하위 Span:
+  - 검색 Tool 호출
+  - LLM 호출
+  - 후속 reasoning 호출
+
+이를 통해 다음을 분석할 수 있다.
+
+- 어떤 단계가 오래 걸리는지
+- Tool 호출이 과도한지
+- 비용이 어디서 발생하는지
+
+## Online Evaluation (운영 중 평가)
+
+Online Evaluation은 **실제 사용자 사용 중** 에이전트를 평가하는 방식이다.
+
+### 운영 환경에서 주로 보는 지표
+
+1. **Cost**
+   - 토큰 사용량 기반 비용
+   - 모델별 비용 비교
+
+2. **Latency**
+   - 전체 응답 시간
+   - 단계별 병목
+
+3. **User Feedback**
+   - 👍 / 👎
+   - 별점
+
+4. **LLM-as-a-Judge**
+   - 출력의 정확성 / 유해성 / 스타일을
+   - 또 다른 LLM이 평가
+
+### Span에 메타데이터 추가하기
+
+```python
+span.update_trace(
+    input=...,
+    output=...,
+    user_id=...,
+    session_id=...,
+    tags=[...],
+)
+```
+
+이렇게 하면:
+
+- 사용자별 분석
+- 세션별 분석
+- 특정 태그 기반 필터링
+
+이 가능해진다.
+
+### Gradio UI + User Feedback 연동
+
+Gradio UI에서 사용자가 👍 / 👎 를 누르면  
+그 정보가 **Langfuse Trace에 Score로 기록**된다.
+
+이는 **정성적 평가를 정량화하는 핵심 포인트**다.
+
+### LLM-as-a-Judge
+
+LLM을 심판으로 사용해 다음을 자동 평가할 수 있다.
+
+- 독성 여부
+- 정확성
+- 도움됨 정도
+
+이 방식은 **사람이 매번 평가하기 어려운 상황**에서 매우 유용하다.
+
+## Offline Evaluation (오프라인 평가)
+
+Offline Evaluation은 **사전에 준비된 데이터셋**으로 평가한다.
+
+### GSM8K 예제
+
+- 질문 + 정답이 이미 존재
+- 에이전트를 동일 조건으로 반복 실행
+- 결과를 비교
+
+Langfuse Dataset 기능을 사용하면:
+
+- 데이터셋 단위 Trace 관리
+- Run 간 비교
+- 모델/프롬프트별 성능 비교
+
+가 가능하다.
+
+## Offline Evaluation 실행 흐름 요약
+
+1. 벤치마크 데이터셋 준비
+2. Langfuse에 Dataset 등록
+3. 각 데이터 항목마다 Agent 실행
+4. Trace를 Dataset Item과 연결
+5. 결과 비교 및 분석
+
+**CI / 모델 교체 시 필수 단계**
+
+## 전체 정리
+
+이 글에서 다룬 핵심은 다음이다.
+
+1. Observability는 **“에이전트 내부를 보는 눈”**
+2. Evaluation은 **“그 행동을 판단하는 기준”**
+3. Online + Offline 평가를 함께 써야 한다
+4. smolagents + Langfuse는 이를 빠르게 구현할 수 있는 조합이다
+
+이제 에이전트는 더 이상 블랙박스가 아니다.  
+**추적 가능하고, 평가 가능하며, 개선 가능한 시스템**이 된다.
 
 참고자료
 Huggingface, agents course, https://huggingface.co/learn
