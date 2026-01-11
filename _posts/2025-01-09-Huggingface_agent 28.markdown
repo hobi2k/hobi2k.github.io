@@ -90,8 +90,6 @@ State를 입력으로 받아 작업을 수행하고 **State의 일부를 갱신*
 model = ChatOpenAI(temperature=0)
 ```
 
----
-
 ### 이메일 읽기 노드
 
 ```python
@@ -110,8 +108,6 @@ def read_email(state: EmailState):
     # State 변경 없음
     return {}
 ```
-
----
 
 ### 이메일 분류 노드 (LLM 사용)
 
