@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "허깅페이스 에이전트 코스 - Pokémon Battle LLM Agent 1"
-date:   2025-01-11 00:10:22 +0900
+date:   2025-01-12 00:10:22 +0900
 categories: Huggingface_agent
 ---
 
