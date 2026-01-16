@@ -281,4 +281,4 @@ Create a file called "invitation.md" and write a short interview invitation.
 - Lemonade Server는 로컬 가속 심장
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

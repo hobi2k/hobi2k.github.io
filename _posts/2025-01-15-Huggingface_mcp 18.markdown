@@ -230,4 +230,4 @@ lsof -i :8080
 - Tool 중심 -> Tool + Prompt 결합
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

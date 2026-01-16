@@ -246,4 +246,4 @@ git push -u origin main
 - Hugging Face Spaces로 손쉬운 공유 가능
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

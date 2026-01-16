@@ -211,4 +211,4 @@ Do not output code or instructions—just complete the task and confirm when it 
 - 진정한 local-first AI 개발 환경 완성
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

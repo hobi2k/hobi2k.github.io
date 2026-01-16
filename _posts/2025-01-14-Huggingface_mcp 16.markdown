@@ -121,4 +121,4 @@ Claude Code는 더 이상 “코드만 아는 AI”가 아니라
 **팀의 개발 흐름을 이해하고 함께 일하는 에이전트**가 된다.
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

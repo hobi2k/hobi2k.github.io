@@ -199,4 +199,4 @@ Server가 Client/Host에 **LLM 상호작용을 수행해 달라고 요청**할 �
 로 정리된다.
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

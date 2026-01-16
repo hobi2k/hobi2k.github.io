@@ -173,4 +173,4 @@ Hugging Face MCP Server는 다음 역할을 동시에 수행한다.
 
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

@@ -284,4 +284,4 @@ Slack 메시지가 안 보일 때
 - 실제 팀에서 바로 쓸 수 있는 시스템
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

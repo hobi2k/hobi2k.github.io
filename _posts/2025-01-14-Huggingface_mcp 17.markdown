@@ -207,4 +207,4 @@ Claude에게 질문:
 - 테스트 중심 MCP 개발 흐름
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

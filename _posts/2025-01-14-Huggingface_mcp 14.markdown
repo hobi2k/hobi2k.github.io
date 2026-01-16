@@ -244,4 +244,4 @@ Agent 설정의 URL만 바꾸면 된다.
 - MCP의 “도구 분리 + 조합” 철학을 가장 잘 보여주는 예시
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

@@ -260,4 +260,4 @@ Prompts
 - Prompts = 사고 절차
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

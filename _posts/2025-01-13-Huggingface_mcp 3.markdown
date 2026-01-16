@@ -220,4 +220,4 @@ MCP는 “한 번 정하고 끝”인 프로토콜이 아니다.
 실제로 **다양한 환경에서 안정적으로 동작하는 AI 연결 표준**이 된다.
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

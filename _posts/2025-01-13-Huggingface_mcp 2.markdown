@@ -174,4 +174,4 @@ MCP 아키텍처는 다음 원칙을 중심으로 설계되었다.
 
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

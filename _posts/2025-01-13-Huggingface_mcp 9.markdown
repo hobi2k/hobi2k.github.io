@@ -155,4 +155,4 @@ Gradio는 MCP를:
 - SDK, Gradio, Hugging Face를 통해 **이미 실사용 가능한 생태계** 형성
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

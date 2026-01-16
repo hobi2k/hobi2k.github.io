@@ -172,4 +172,4 @@ Client는 다음 메서드를 통해 Server의 기능을 동적으로 탐색한�
 **에이전트 친화적 표준 프로토콜**로 만드는 핵심이다.
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

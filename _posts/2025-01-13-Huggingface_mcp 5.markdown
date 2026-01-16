@@ -221,4 +221,4 @@ MCP는 언어 중립적이며, 공식·커뮤니티 SDK가 다수 제공된다.
 즉, MCP SDK는 **“표준을 현실적인 개발 경험으로 바꾸는 계층”**이다.
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

@@ -247,4 +247,4 @@ git push -u origin main
 에 매우 강력하다.
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

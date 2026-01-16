@@ -146,4 +146,4 @@ Hub의 Discussion Bot과 동일한 패턴을 따른다.
   - **Agent가 PR로 대신 처리**할 수 있다
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

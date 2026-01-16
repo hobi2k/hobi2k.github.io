@@ -274,4 +274,4 @@ npx @huggingface/tiny-agents run ./my-agent
 - 실제 “에이전트 경험”은 Client 설계에 크게 좌우됨
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

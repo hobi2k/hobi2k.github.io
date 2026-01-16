@@ -256,4 +256,4 @@ https://YOUR_USERNAME-mcp-sentiment.hf.space/gradio_api/mcp/sse
 - 실전 MCP Server 구현의 표준적인 출발점
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

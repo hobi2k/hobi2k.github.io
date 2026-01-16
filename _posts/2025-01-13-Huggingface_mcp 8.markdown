@@ -251,4 +251,4 @@ Gradio MCP Server는 공유가 매우 쉽다.
 
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn

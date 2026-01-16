@@ -173,4 +173,4 @@ WEBHOOK_SECRET=generated_secret_here
 모두에 적합하다.
 
 참고자료
-Huggingface, agents course, https://huggingface.co/learn
+Huggingface, mcp course, https://huggingface.co/learn
