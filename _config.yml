@@ -29,6 +29,8 @@ plainwhite:
       url: /category/Style-Bert-VITS2/
     - title: LoRAMap
       url: /category/LoRAMap/
+    - title: ComfyUI
+      url: /category/ComfyUI/
     - title: Huggingface_Audio
       url: /category/Huggingface_Audio/
     - title: Huggingface_smol
