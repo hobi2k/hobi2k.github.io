@@ -21,6 +21,8 @@ plainwhite:
       url: /category/Deeplearning/
     - title: Healtheat_Vision
       url: /category/Healtheat_Vision/
+    - title: Intermediate_RAG
+      url: /category/Intermediate_RAG/
     - title: LLM自作入門
       url: /category/LLM自作入門/
     - title: Qwen2.5
