@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Naver Blog">
+  <rect width="192" height="192" rx="20" fill="#03C75A"/>
+  <ellipse cx="96" cy="108" rx="56" ry="48" fill="#EFEFEF"/>
+  <ellipse cx="96" cy="92" rx="52" ry="20" fill="#CFCFCF"/>
+  <ellipse cx="96" cy="96" rx="44" ry="14" fill="#8D4B2C"/>
+  <path d="M132 76c16 0 28 11 28 26s-12 26-28 26h-8V116h8c8 0 14-6 14-14s-6-14-14-14h-8V76h8z" fill="#EFEFEF"/>
+  <path d="M82 44c26 0 40 16 40 34v12H58V74c0-17 10-30 24-30z" fill="#19E949"/>
+  <path d="M122 44v34L82 90z" fill="#05D639"/>
+</svg>
