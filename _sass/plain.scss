@@ -144,11 +144,27 @@ main {
   justify-content: center;
   a {
     margin-bottom: .5em;
+    margin-right: 0.25em;
+    text-decoration: none;
   }
   li {
     i {
       font-size: 28px;
     }
+  }
+  .icon-naver {
+    display: inline-flex;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1;
+    background-color: #03c75a;
+    color: #ffffff;
+    font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
   }
 }
 
@@ -406,7 +422,7 @@ table {
   }
   th {
     background-color: #eee;
-    font-family: Raleway;
+    font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
   }
 }
 

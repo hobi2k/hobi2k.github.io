@@ -42,6 +42,13 @@
           </li>
         </a>
         {%- endif -%}
+        {%- if site.plainwhite.social_links.naver_blog -%}
+        <a href="{{ site.plainwhite.social_links.naver_blog }}" target="_blank" rel="noopener noreferrer" aria-label="Naver Blog">
+          <li>
+            <span class="icon-naver">N</span>
+          </li>
+        </a>
+        {%- endif -%}
         {%- if site.plainwhite.social_links.gitlab -%}
         <a href="https://gitlab.com/{{ site.plainwhite.social_links.gitlab }}" target="_blank">
           <li>
