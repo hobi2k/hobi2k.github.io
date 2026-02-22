@@ -16,11 +16,11 @@ $leftWidth: 220px;
 
 body {
   font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
-  font-size: 17px;
-  line-height: 1.7;
+  font-size: 16px;
+  line-height: 1.55;
   color: #1f2937;
   margin: 0;
-  background: linear-gradient(180deg, #f6f8fb 0%, #ffffff 40%);
+  background: #ffffff;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -77,12 +77,13 @@ main {
       width: 100%;
     }
     max-width: 960px;
+    padding-top: 22px;
   }
   .about {
     display: flex;
     height: 100vh;
-    padding-bottom: 15vh;
-    overflow-y: auto;
+    padding-top: 22px;
+    padding-bottom: 24px;
     @media screen and (max-width: $mobileW) {
       height: auto;
       padding: 5vh 30px;
@@ -95,15 +96,16 @@ main {
       max-width: 280px;
     }
     min-width: $leftWidth;
-    justify-content: center;
+    justify-content: flex-start;
     flex-direction: column;
     align-items: center;
+    gap: 10px;
     h2 {
       font-size: 22px;
       margin-top: 25px;
       margin-bottom: 0;
       color: #222222;
-      font-weight: 700;
+      font-weight: 500;
     }
     .tagline {
       text-align: center;
@@ -142,29 +144,33 @@ main {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
+  gap: 8px;
   a {
-    margin-bottom: .5em;
-    margin-right: 0.25em;
     text-decoration: none;
   }
   li {
-    i {
-      font-size: 28px;
-    }
-  }
-  .icon-naver {
+    width: 34px;
+    height: 34px;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
     display: inline-flex;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
     align-items: center;
     justify-content: center;
-    font-size: 17px;
-    font-weight: 700;
-    line-height: 1;
-    background-color: #03c75a;
-    color: #ffffff;
-    font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
+    background: #ffffff;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+    &:hover {
+      transform: translateY(-1px);
+      border-color: #cbd5e1;
+    }
+    i {
+      font-size: 22px;
+    }
+  }
+  .icon-naver-img {
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    display: block;
   }
 }
 
@@ -175,10 +181,10 @@ main {
   ul {
     list-style-type: none;
     padding: 0;
-    margin-top: 0;
-    max-height: 42vh;
+    margin: 4px 0 0;
+    max-height: calc(100vh - 285px);
     overflow-y: auto;
-    padding-right: 6px;
+    padding-right: 2px;
 
     li:last-child {
       a {
@@ -192,16 +198,23 @@ main {
       text-align: left;
       font-size: 0.92rem;
       font-weight: 500;
-      padding: 0.55rem 0.2rem;
+      padding: 0.62rem 0.48rem;
       text-decoration: none;
       border-bottom: 1px dashed #e5e7eb;
+      border-left: 2px solid transparent;
 
       @media screen and (max-width: $mobileW) {
         border-bottom: 0;
+        border-left: 0;
         text-align: center;
         padding: 0.5rem 0.85rem;
         border: 1px solid #e5e7eb;
         border-radius: 999px;
+      }
+
+      &:hover {
+        border-left-color: #03c75a;
+        background: #f8fafc;
       }
     }
   }
@@ -253,7 +266,8 @@ main {
 
 .post-title {
   line-height: 1.2em;
-  font-size: 28px;
+  font-size: 24px;
+  font-weight: 700;
   margin-bottom: 10px;
   letter-spacing: -0.01em;
 }
@@ -278,7 +292,7 @@ main {
   font-family: "Noto Serif KR", "Noto Serif JP", serif;
   font-weight: 400;
   color: #1f2937;
-  line-height: 1.9em;
+  line-height: 1.75;
   letter-spacing: 0.01em;
   p {
     margin-top: 12px;
@@ -313,8 +327,8 @@ main {
     margin-top: 1.6em;
     margin-bottom: 0.55em;
   }
-  h1 { font-size: 2rem; }
-  h2 { font-size: 1.58rem; }
+  h1 { font-size: 1.75rem; }
+  h2 { font-size: 1.4rem; }
   h3 { font-size: 1.26rem; }
   blockquote {
     margin: 1.2rem 0;
@@ -365,24 +379,22 @@ main {
   transition: width 0.1s;
 }
 
-.posts > li:not(.posts-labelgroup) {
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 14px;
-  padding: 1.15rem 1.25rem;
-  margin-bottom: 1rem;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
-  transition: transform 0.2s, box-shadow 0.2s;
-  &:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
-  }
-}
-
 .posts > li .post {
   font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
   color: #4b5563;
-  line-height: 1.75;
+  line-height: 1.6;
+}
+
+/* Home excerpt headings can be oversized when markdown starts with h1/h2. */
+.posts > li .post h1,
+.posts > li .post h2,
+.posts > li .post h3 {
+  font-size: 1.1rem;
+  margin-top: 0.45rem;
+  margin-bottom: 0.35rem;
+  line-height: 1.45;
+  font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
+  font-weight: 600;
 }
 
 .category-title {
@@ -403,10 +415,10 @@ main {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 0.8rem 0.9rem;
+  padding: 0.92rem 1rem;
   border-radius: 10px;
   border: 1px solid #e5e7eb;
-  background: #fff;
+  background: #fcfdff;
   margin-bottom: 0.6rem;
 }
 
@@ -430,9 +442,6 @@ footer {
   display: none;
 }
 @media screen and (max-width: $mobileW) {
-  body {
-    font-size: 16px;
-  }
   .about {
     .about-header.condensed {
       align-items: start;
@@ -462,7 +471,6 @@ footer {
     gap: 8px;
     max-height: none;
     overflow: visible;
-    padding-right: 0;
   }
   .post-container {
     padding-left: 0;
