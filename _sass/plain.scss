@@ -2,7 +2,7 @@
 @import "ext/normalize";
 @import "syntax";
 
-$linkColor: #0a59b0;
+$linkColor: #0b63ce;
 $mobileW: 768px;
 $smallMobileW: 480px;
 $bigScreenW: 1600px;
@@ -15,10 +15,12 @@ $leftWidth: 220px;
 }
 
 body {
-  font-family: "Raleway", sans-serif;
-  font-size: 16px;
-  line-height: 1.2em;
+  font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
+  font-size: 17px;
+  line-height: 1.7;
+  color: #1f2937;
   margin: 0;
+  background: linear-gradient(180deg, #f6f8fb 0%, #ffffff 40%);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -31,7 +33,7 @@ video {
 }
 
 a {
-  color: #000;
+  color: #1f2937;
   transition: color 0.3s;
   &:hover {
     color: $linkColor;
@@ -74,11 +76,13 @@ main {
       margin-left: $leftWidth;
       width: 100%;
     }
+    max-width: 960px;
   }
   .about {
     display: flex;
     height: 100vh;
     padding-bottom: 15vh;
+    overflow-y: auto;
     @media screen and (max-width: $mobileW) {
       height: auto;
       padding: 5vh 30px;
@@ -99,15 +103,15 @@ main {
       margin-top: 25px;
       margin-bottom: 0;
       color: #222222;
-      font-weight: normal;
+      font-weight: 700;
     }
     .tagline {
       text-align: center;
-      font-size: 22px;
+      font-size: 16px;
       margin-top: 0px;
-      color: #aaa;
+      color: #6b7280;
       white-space: pre-wrap;
-      line-height: normal;
+      line-height: 1.6;
     }
     img {
       max-width: 150px;
@@ -143,18 +147,22 @@ main {
   }
   li {
     i {
-      font-size: 34px;
+      font-size: 28px;
     }
   }
 }
 
 .navigation {
-  width: 80%;
+  width: 100%;
+  max-width: 230px;
 
   ul {
     list-style-type: none;
     padding: 0;
     margin-top: 0;
+    max-height: 42vh;
+    overflow-y: auto;
+    padding-right: 6px;
 
     li:last-child {
       a {
@@ -164,14 +172,20 @@ main {
 
     a {
       display: block;
-      font-family: 'Merriweather';
-      text-align: center;
-      padding: 1rem 0;
+      font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
+      text-align: left;
+      font-size: 0.92rem;
+      font-weight: 500;
+      padding: 0.55rem 0.2rem;
       text-decoration: none;
-      border-bottom: 1px solid #ececec;
+      border-bottom: 1px dashed #e5e7eb;
 
       @media screen and (max-width: $mobileW) {
-        padding: 2rem 0;
+        border-bottom: 0;
+        text-align: center;
+        padding: 0.5rem 0.85rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 999px;
       }
     }
   }
@@ -225,6 +239,7 @@ main {
   line-height: 1.2em;
   font-size: 28px;
   margin-bottom: 10px;
+  letter-spacing: -0.01em;
 }
 .posts,
 .post-container {
@@ -241,21 +256,33 @@ main {
 }
 .post-container {
   padding-left: 30px;
+  max-width: 860px;
 }
 .post {
-  font-family: "Merriweather", sans-serif;
-  font-weight: 300;
-  color: #222;
+  font-family: "Noto Serif KR", "Noto Serif JP", serif;
+  font-weight: 400;
+  color: #1f2937;
   line-height: 1.9em;
+  letter-spacing: 0.01em;
   p {
-    margin-top: 10px;
+    margin-top: 12px;
+    margin-bottom: 14px;
+  }
+  ul, ol {
+    margin: 0.3rem 0 1.1rem 1.2rem;
+    padding-left: 0.6rem;
+  }
+  li {
+    margin-bottom: 0.35rem;
   }
   a {
     color: $linkColor;
-    text-decoration: none;
-    transition: border-bottom 0.4s;
+    text-decoration: underline;
+    text-decoration-thickness: 0.08em;
+    text-underline-offset: 0.14em;
+    transition: opacity 0.2s;
     &:hover {
-      border-bottom: 0.5px solid $linkColor;
+      opacity: 0.82;
     }
   }
   h1,
@@ -264,7 +291,43 @@ main {
   h4,
   h5,
   h6 {
-    font-family: Raleway, sans-serif;
+    font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
+    line-height: 1.35;
+    letter-spacing: -0.015em;
+    margin-top: 1.6em;
+    margin-bottom: 0.55em;
+  }
+  h1 { font-size: 2rem; }
+  h2 { font-size: 1.58rem; }
+  h3 { font-size: 1.26rem; }
+  blockquote {
+    margin: 1.2rem 0;
+    padding: 0.75rem 1rem;
+    border-left: 4px solid #0b63ce;
+    background: #f7faff;
+    border-radius: 8px;
+  }
+  img {
+    border-radius: 10px;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.1);
+    margin: 0.8rem 0;
+  }
+  pre {
+    padding: 1rem 1.1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    overflow-x: auto;
+  }
+  code {
+    font-family: "JetBrains Mono", Consolas, Menlo, monospace;
+    font-size: 0.9em;
+    background: #f3f4f6;
+    border-radius: 6px;
+    padding: 0.15em 0.34em;
+  }
+  pre code {
+    background: transparent;
+    padding: 0;
   }
 }
 .posts-labelgroup {
@@ -285,6 +348,57 @@ main {
   overflow: hidden;
   transition: width 0.1s;
 }
+
+.posts > li:not(.posts-labelgroup) {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 1.15rem 1.25rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  transition: transform 0.2s, box-shadow 0.2s;
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
+  }
+}
+
+.posts > li .post {
+  font-family: "Noto Sans KR", "Noto Sans JP", sans-serif;
+  color: #4b5563;
+  line-height: 1.75;
+}
+
+.category-title {
+  margin-top: 2.3rem;
+  margin-bottom: 0.9rem;
+  font-size: 1.85rem;
+  letter-spacing: -0.02em;
+}
+
+.category-list ul {
+  list-style: none;
+  padding-left: 0;
+  margin-top: 0.75rem;
+}
+
+.category-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 0.8rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  margin-bottom: 0.6rem;
+}
+
+.category-date {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
 table {
   th, td {
     padding: 8px 13px;
@@ -300,6 +414,9 @@ footer {
   display: none;
 }
 @media screen and (max-width: $mobileW) {
+  body {
+    font-size: 16px;
+  }
   .about {
     .about-header.condensed {
       align-items: start;
@@ -315,13 +432,27 @@ footer {
         }
       }
       .tagline {
-        font-size: 18px;
+        font-size: 14px;
         margin-bottom: 0px;
       }
     }
     .about-footer.condensed {
       display: none;
     }
+  }
+  .navigation ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+  .post-container {
+    padding-left: 0;
+  }
+  .posts > li:not(.posts-labelgroup) {
+    padding: 0.95rem 1rem;
   }
   footer.condensed {
     display: flex;

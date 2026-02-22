@@ -20,7 +20,7 @@ layout: default
   {% for post in posts %}
     <li>
       <a href="{{ post.url | relative_url }}">{{ post.title }}</a>
-      <span style="color: gray;">— {{ post.date | date: "%Y-%m-%d" }}</span>
+      <span class="category-date">— {{ post.date | date: "%Y-%m-%d" }}</span>
     </li>
   {% endfor %}
 </ul>

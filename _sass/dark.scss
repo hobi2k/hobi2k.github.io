@@ -18,6 +18,26 @@
 		color: #ddd;
 	}
 
+	.posts > li:not(.posts-labelgroup),
+	.category-list li {
+		background-color: #111827;
+		border-color: #374151;
+	}
+
+	.post blockquote {
+		border-left-color: #4da3ff;
+		background-color: #1f2937;
+	}
+
+	.post code {
+		background-color: #1f2937;
+	}
+
+	.post pre {
+		border-color: #374151;
+		background-color: #111827;
+	}
+
 	.social [class^="icon-"] {
 		color: $dark_text_color
 	}
