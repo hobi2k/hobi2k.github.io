@@ -1,0 +1,126 @@
+---
+layout: post
+title:  "ComfyUI 환경 완전 고정 세팅 – Wan2.2 사용을 위한 삽질의 기록2"
+date:   2026-03-19 00:10:22 +0900
+categories: ComfyUI
+---
+
+# Wan 2.2 ComfyUI 환경 구축 가이드 (Windows / RTX 50xx / CUDA 13)
+
+이 문서는 Windows + RTX 50 시리즈 환경에서 Wan 2.2를 ComfyUI로 안정적으로 구동하기 위한 설정 방법을 정리한 것이다.
+실제 설치 과정에서 발생한 문제들(CUDA 13, torch 2.10, SageAttention, WanVideoWrapper 오류, LoRA shape 오류 등)을 기준으로 작성되었다.
+
+
+## 1. 권장 환경
+
+GPU
+> RTX 40 / RTX 50 시리즈
+
+Python
+> Python 3.11 권장
+
+WanVideoWrapper는 Python 3.10도 동작하지만
+SageAttention 지원상 3.11을 사용해야 한다.
+
+
+## 2. CUDA 및 NVIDIA 드라이버
+
+RTX 50 시리즈는 CUDA 13 사용.
+
+CUDA 확인
+
+```bash
+nvidia-smi
+```
+
+예시
+
+```bash
+Driver Version: 595.xx
+CUDA Version: 13.0
+```
+
+드라이버 다운로드
+
+https://www.nvidia.com/en-us/drivers/
+
+권장
+
+Studio Driver 595 이상
+
+
+## 3. Python 환경 확인
+
+- ComfyUI 내부 venv 사용
+- ComfyUI/venv
+- Python 확인
+- python --version
+
+예시
+
+```bash
+Python 3.11.x
+```
+
+## 4. PyTorch (CUDA 13)
+
+Wan 2.2에서 가장 안정적인 조합
+
+**torch 2.10.0 + cu130**
+
+설치
+
+```bash
+pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+```
+
+설치 확인
+
+```bash
+python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
+```
+
+예시 출력
+
+```bash
+2.10.0
+13.0
+True
+```
+
+## 5. SageAttention 설치
+
+Wan 2.2 성능 최적화를 위해 필요하다.
+
+SageAttention (2.2.0, cp311 전용) 설치
+
+```bash
+pip install "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl"
+```
+
+설치 확인
+
+```bash
+python -c "import sageattention"
+```
+
+## 6. Triton 설치
+
+Triton (윈도우 전용, 3.6 미만) 설치
+
+```bash
+pip install -U "triton-windows<3.6"
+```
+
+## 7. 최종 체크리스트
+
+Python 3.11
+CUDA 13
+Driver 595+
+torch 2.10 cu130
+SageAttention
+WanVideoWrapper
+Wan2.2 model
+
+참고 자료 
+https://github.com/deepbeepmeep/Wan2GP/issues/1480
