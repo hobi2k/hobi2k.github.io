@@ -33,6 +33,8 @@ plainwhite:
       url: /category/LoRAMap/
     - title: ComfyUI
       url: /category/ComfyUI/
+    - title: TTS
+      url: /category/TTS/
     - title: Huggingface_Audio
       url: /category/Huggingface_Audio/
     - title: Huggingface_smol
