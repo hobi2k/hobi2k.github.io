@@ -197,23 +197,29 @@ SwarmUI는 작업 요청 시 모델 이름을 백엔드에 그대로 넘긴다. 
 
 ## 5. 같은 서버에서 멀티 GPU 운영 시 추가 설정
 
-### GPU 지정 방법
+### GPU 번호 확인
 
-ComfyUI 실행 시 `--cuda-device` 인수로 사용할 GPU 번호를 지정한다.
+먼저 서버에서 GPU 번호를 확인한다.
 
 ```bash
-# GPU 0번 사용
-python main.py --port 8188 --listen 0.0.0.0 --cuda-device 0
-
-# GPU 1번 사용
-python main.py --port 8189 --listen 0.0.0.0 --cuda-device 1
+nvidia-smi
 ```
 
-StabilityMatrix로 관리하는 경우, 같은 ComfyUI를 여러 개 인스턴스로 관리하기 어렵기 때문에 **직접 실행 스크립트**를 별도로 구성하거나, 서버당 GPU 1개 체계로 분리하는 편이 관리가 쉽다.
+출력에서 각 GPU의 인덱스(0, 1, 2...)와 VRAM을 확인한다.
 
-### VRAM 충돌 방지
+### StabilityMatrix에서 GPU별 ComfyUI 인스턴스 만들기
 
-같은 서버의 여러 GPU가 공유 메모리 영역을 잘못 참조하면 충돌이 날 수 있다. `--cuda-device`로 명시하면 대부분 방지된다.
+StabilityMatrix는 **같은 패키지를 이름만 달리해서 여러 번 설치**할 수 있다.
+GPU별로 별도 패키지를 만들고 Launch Options에서 포트와 GPU 번호를 각각 지정하면 된다.
+
+| 패키지 이름 | Launch Options |
+|---|---|
+| `ComfyUI-GPU0` | `--listen 0.0.0.0 --cuda-device 0 --port 8188` |
+| `ComfyUI-GPU1` | `--listen 0.0.0.0 --cuda-device 1 --port 8189` |
+
+두 패키지를 실행한 뒤 SwarmUI 백엔드에 각각 `http://127.0.0.1:8188`, `http://127.0.0.1:8189`를 추가한다.
+
+모델 폴더는 두 패키지가 같은 경로를 바라봐야 한다. StabilityMatrix의 공유 `Models` 폴더를 쓰면 자연스럽게 해결된다.
 
 ---
 
